@@ -148,10 +148,11 @@ export function ChatComposer({
           <button
             type="button"
             onClick={onCancel}
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-[var(--radius-md)] bg-rose-500 text-white transition-all hover:bg-rose-600 active:scale-95 sm:h-9 sm:w-9"
+            className="relative grid h-10 w-10 shrink-0 place-items-center rounded-[var(--radius-md)] border border-white/[0.08] bg-white/[0.06] text-white/80 transition-all hover:border-rose-400/30 hover:bg-rose-500/15 hover:text-rose-100 active:scale-95 sm:h-9 sm:w-9"
             aria-label="Parar geração"
           >
-            <Square size={15} />
+            <span className="absolute inset-1 rounded-[calc(var(--radius-md)-4px)] border border-[color:var(--accent)]/25 border-t-[color:var(--accent)] animate-spin" />
+            <Square size={12} fill="currentColor" />
           </button>
         ) : (
           <button

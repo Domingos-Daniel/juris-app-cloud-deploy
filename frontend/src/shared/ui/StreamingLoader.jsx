@@ -1,11 +1,12 @@
-import { Search, ShieldCheck, PenLine, Sparkles } from 'lucide-react'
+import { FileText, Search, ShieldCheck, PenLine, Sparkles } from 'lucide-react'
 import { cleanAnswerBody } from '../utils/markdown'
 import LegalMarkdown from './LegalMarkdown'
 
 const PHASES = [
-  { key: 'classifying', label: 'A enquadrar a questão', helper: 'A interpretar o pedido e o ramo jurídico aplicável.', Icon: Search },
-  { key: 'retrieving', label: 'A pesquisar fontes', helper: 'A cruzar legislação e contexto relevante para responder com rigor.', Icon: ShieldCheck },
-  { key: 'composing', label: 'A redigir a resposta', helper: 'A transformar a análise numa resposta clara e fundamentada.', Icon: PenLine },
+  { key: 'uploading', label: 'A preparar o documento', helper: 'A extrair o texto do anexo antes da análise jurídica.', Icon: FileText },
+  { key: 'classifying', label: 'A analisar o pedido', helper: 'A identificar o ramo jurídico, o objectivo e o nível de detalhe adequado.', Icon: Search },
+  { key: 'retrieving', label: 'A localizar fundamentos', helper: 'A cruzar legislação, artigos e contexto relevante.', Icon: ShieldCheck },
+  { key: 'composing', label: 'A estruturar a resposta', helper: 'A organizar a orientação em linguagem clara e fundamentada.', Icon: PenLine },
 ]
 
 const MOBILE_SKELETON_WIDTHS = ['92%', '84%', '88%']
@@ -87,14 +88,14 @@ export function StreamingLoader({ content = '', phase = 'idle', elapsedMs = 0 })
           <div className="flex items-center gap-2">
             <span className="h-2 w-2 shrink-0 rounded-full bg-[color:var(--accent)] animate-pulse sm:hidden" />
             <p className="min-w-0 flex-1 truncate text-[13px] font-semibold text-white/82 sm:text-[14px] sm:text-white/90">
-              {hasContent ? 'A construir a resposta final' : activePhase.label}
+              {hasContent ? 'Resposta em curso' : activePhase.label}
             </p>
             <span className="shrink-0 rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium tabular-nums text-white/45 sm:py-1">
               {formatElapsed(elapsedMs)}
             </span>
           </div>
           <p className="mt-1 text-[12px] leading-5 text-white/42 sm:text-[12px] sm:text-white/48">
-            {hasContent ? 'A resposta já está a chegar. Pode continuar a acompanhar em tempo real.' : activePhase.helper}
+            {hasContent ? 'Estou a escrever à medida que valido a resposta final.' : activePhase.helper}
           </p>
 
           <div className="mt-3 hidden flex-wrap gap-2 sm:flex">
@@ -118,7 +119,7 @@ export function StreamingLoader({ content = '', phase = 'idle', elapsedMs = 0 })
                 </div>
                 <div className="flex items-center gap-2 text-[11px] text-white/30">
                   <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--accent)] animate-pulse" />
-                  Texto a chegar em streaming
+                  A transmitir em tempo real
                 </div>
               </div>
             ) : (
@@ -126,7 +127,7 @@ export function StreamingLoader({ content = '', phase = 'idle', elapsedMs = 0 })
                 <SkeletonLines />
                 <div className="flex items-center gap-2 text-[11px] text-white/28">
                   <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--accent)] animate-pulse" />
-                  A preparar a melhor resposta disponível
+                  A processar o pedido
                 </div>
               </div>
             )}

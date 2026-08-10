@@ -178,11 +178,20 @@ export function ChatMessage({ role, content, createdAt, sourceRefs = [], answerM
           )
         ) : isClarifying ? (
           <div className="space-y-3">
-            <p className="text-[15px] font-medium leading-7 text-amber-200/95 sm:text-[13px] sm:leading-relaxed">{clarifyingLead}</p>
+            <div className="flex items-start gap-3">
+              <span className="mt-1 hidden h-2 w-2 shrink-0 rounded-full bg-[color:var(--accent)] sm:block" />
+              <div className="min-w-0">
+                <p className="text-[15px] font-semibold leading-7 tracking-[-0.01em] text-white/88 sm:text-[13px] sm:leading-6">
+                  {clarifyingLead}
+                </p>
+                <p className="mt-1 text-[12px] leading-5 text-white/42">
+                  Responda só ao ponto que souber; eu continuo a análise neste mesmo chat.
+                </p>
+              </div>
+            </div>
             {clarifyingQuestions.length > 0 ? (
               <ClarifyingQuestions questions={clarifyingQuestions} onSelect={onClarifyingSelect} />
             ) : null}
-            <p className="text-[12px] leading-5 text-white/35 sm:text-[11px]">Se preferir, responda a uma das sugestões abaixo e eu continuo a análise no mesmo fio da conversa.</p>
           </div>
         ) : isRefused ? (
           <p className="text-[15px] leading-7 text-rose-200/80 sm:text-[13px] sm:leading-relaxed">

@@ -31,6 +31,30 @@ DIPLOMA_PATTERNS: list[tuple[str, dict]] = [
             "force_topic_route": True,
         },
     ),
+    # Detenção/prisão por polícia em reunião, manifestação ou actividade política.
+    (
+        r"(pol[ií]cia|agente[s]?\s+policiais|autoridade).*(prendeu|det[eé]m|deteve|detido|deten[çc][aã]o|esquadra)"
+        r"|"
+        r"(prendeu|det[eé]m|deteve|detido|deten[çc][aã]o|esquadra).*(pol[ií]cia|agente[s]?\s+policiais|autoridade)"
+        r"|"
+        r"(actividade|atividade|reuni[aã]o|manifesta[çc][aã]o|partido|pol[ií]tico|democr[aá]tico).*(pol[ií]cia|prendeu|detido|deten[çc][aã]o)",
+        {
+            "main_branch": "misto",
+            "topic_route": "cpp",
+            "requested_diplomas": [
+                "Código do Processo Penal",
+                "Código Penal",
+                "Constituição da República de Angola",
+            ],
+            "branch_candidates": ["penal", "constitucional", "administrativo"],
+            "request_type": "passos_praticos",
+            "specificity": "factual",
+            "audience": "leigo",
+            "needs_multi_branch_handling": True,
+            "force_main_branch": True,
+            "force_topic_route": True,
+        },
+    ),
     # Furto/burla/posse de bens em relação afectiva ou ex-casal.
     # Ex.: "a minha ex-namorada roubou-me dinheiro e diz que era do casal".
     (

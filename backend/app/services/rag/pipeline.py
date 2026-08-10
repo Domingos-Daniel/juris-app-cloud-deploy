@@ -796,6 +796,17 @@ def _needs_clarification_from_classification(
     ):
         return False
 
+    branch_known = classification.main_branch != "indeterminado"
+    has_legal_signal = bool(
+        classification.requested_diplomas
+        or classification.requested_article_numbers
+        or classification.search_query
+        or classification.specificity in {"factual", "validacao_base_legal", "comparacao_multi_ramo"}
+        or classification.topic_route not in {"geral", "", None}
+    )
+    if branch_known and has_legal_signal:
+        return False
+
     # Extreme low confidence: the query doesn't match any legal prototype.
     # Even if the LLM guessed a branch, it's unreliable — flag it.
     if semantic_confidence < 0.15:
@@ -835,6 +846,54 @@ CLARIFYING_QUESTIONS_GENERAL = [
     "Qual e o facto concreto que aconteceu e o que pretende resolver?",
     "Se tiver, indique artigo, diploma ou entidade envolvida.",
 ]
+
+
+def _extract_case_subject(query: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (query or "").strip())
+    if not cleaned:
+        return "o caso"
+    return cleaned[:90].rstrip(" ,.;:!?") or "o caso"
+
+
+def _contextual_clarifying_questions(
+    query: str,
+    classification,
+) -> list[str]:
+    normalized = _normalize(query)
+    subject = _extract_case_subject(query)
+
+    if any(term in normalized for term in ("policia", "polícia", "prendeu", "detido", "detencao", "detenção")):
+        return [
+            f"No caso sobre {subject}, a polícia explicou o motivo da detenção ou indicou algum crime?",
+            "Foram levados para esquadra/tribunal, libertados no mesmo dia ou ainda estão detidos?",
+            "Houve violência, apreensão de documentos/telemóveis ou participação numa manifestação/reunião política?",
+        ]
+    if any(term in normalized for term in ("despedido", "despedimento", "contrato", "salario", "salário", "trabalhador")):
+        return [
+            "O contrato era por tempo indeterminado, a termo ou não havia contrato escrito?",
+            "Recebeu aviso prévio, carta de despedimento ou processo disciplinar?",
+            "Pretende calcular direitos, impugnar o despedimento ou saber que documentos reunir?",
+        ]
+    if any(term in normalized for term in ("roubou", "furto", "furtou", "burla", "dinheiro", "kz", "kzs")):
+        return [
+            "O bem/dinheiro era exclusivamente seu, comum do casal/família ou foi entregue voluntariamente?",
+            "Tem provas como transferência bancária, mensagens, testemunhas ou recibos?",
+            "Pretende apresentar queixa-crime, recuperar o valor por via civil ou tentar acordo primeiro?",
+        ]
+    if any(term in normalized for term in ("terreno", "casa", "propriedade", "posse", "despejo")):
+        return [
+            "Tem documento de compra, declaração da administração/soba, registo predial ou apenas posse de facto?",
+            "O conflito é sobre venda, ocupação, herança, despejo ou legalização?",
+            "Pretende impedir a ocupação, recuperar o imóvel ou regularizar a propriedade?",
+        ]
+    if classification.main_branch != "indeterminado":
+        branch_label = str(classification.main_branch).replace("_", " ")
+        return [
+            f"No ramo {branch_label}, qual foi exactamente o acto ou decisão que quer analisar?",
+            "Em que data aconteceu e quem são as pessoas ou entidades envolvidas?",
+            "Pretende orientação prática, artigos aplicáveis, minuta/queixa ou avaliação de riscos?",
+        ]
+    return CLARIFYING_QUESTIONS_GENERAL
 
 CLARIFYING_QUESTIONS_FOLLOW_UP = [
     "Pretende que eu aprofunde a resposta anterior, compare com outra norma ou transforme em passos praticos?",
@@ -909,7 +968,22 @@ def _default_clarifying_questions(
         history, classification, chat_state
     ) and _looks_short_follow_up_prompt(query):
         return CLARIFYING_QUESTIONS_FOLLOW_UP
-    return CLARIFYING_QUESTIONS_GENERAL
+    return _contextual_clarifying_questions(query, classification)
+
+
+def _should_refresh_clarifying_questions(questions: list[str] | None) -> bool:
+    if not questions:
+        return True
+    joined = " ".join(questions).casefold()
+    generic_markers = (
+        "área do problema",
+        "area do problema",
+        "área juridica",
+        "area juridica",
+        "facto concreto",
+        "artigo, diploma ou entidade",
+    )
+    return any(marker in joined for marker in generic_markers)
 
 
 def _clarifying_message(query: str, history: list[str], classification) -> str:
@@ -918,8 +992,8 @@ def _clarifying_message(query: str, history: list[str], classification) -> str:
             "Percebi que quer dar seguimento ao tema anterior. "
             "Para responder com rigor juridico e utilidade pratica, preciso de um detalhe adicional."
         )
-    if classification.main_branch != "indeterminado":
-        return "Tenho elementos iniciais, mas ainda falta um dado essencial para uma resposta juridica completa e bem fundamentada."
+        if classification.main_branch != "indeterminado":
+            return "Tenho elementos iniciais, mas ainda falta um dado essencial para uma resposta juridica completa e bem fundamentada."
     return "Para lhe dar uma orientacao juridica precisa e fundamentada, preciso de 1-2 detalhes sobre o seu caso."
 
 
@@ -1491,6 +1565,12 @@ class RAGPipeline:
                 classification.clarifying_questions = _default_clarifying_questions(
                     normalized_query, classification, history, chat_state
                 )
+        elif classification.needs_clarification and _should_refresh_clarifying_questions(
+            classification.clarifying_questions
+        ):
+            classification.clarifying_questions = _default_clarifying_questions(
+                normalized_query, classification, history, chat_state
+            )
 
         # Multi-topic detection: force multi-branch when query has "E" separating topics
         if (
@@ -2405,6 +2485,12 @@ class RAGPipeline:
                 classification.clarifying_questions = _default_clarifying_questions(
                     normalized_query, classification, history, chat_state
                 )
+        elif classification.needs_clarification and _should_refresh_clarifying_questions(
+            classification.clarifying_questions
+        ):
+            classification.clarifying_questions = _default_clarifying_questions(
+                normalized_query, classification, history, chat_state
+            )
 
         return {
             "needs_clarification": classification.needs_clarification,
@@ -2567,6 +2653,12 @@ class RAGPipeline:
                 classification.clarifying_questions = _default_clarifying_questions(
                     normalized_query, classification, history, chat_state
                 )
+        elif classification.needs_clarification and _should_refresh_clarifying_questions(
+            classification.clarifying_questions
+        ):
+            classification.clarifying_questions = _default_clarifying_questions(
+                normalized_query, classification, history, chat_state
+            )
 
         if classification.needs_clarification and classification.clarifying_questions:
             clarifying_answer = _clarifying_message(
