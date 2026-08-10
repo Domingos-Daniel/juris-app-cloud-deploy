@@ -1698,10 +1698,14 @@ class PostgresManager:
         if cached_emb is not None:
             query_vec = cached_emb
         else:
-            query_embedding = await embedding_service.embed_query(query)
-            query_vec = list(query_embedding) if query_embedding else None
-            if query_vec:
-                _embedding_cache[cache_key] = query_vec
+            try:
+                query_embedding = await embedding_service.embed_query(query)
+                query_vec = list(query_embedding) if query_embedding else None
+                if query_vec:
+                    _embedding_cache[cache_key] = query_vec
+            except Exception as exc:
+                logger.warning("Embedding query failed; falling back to lexical retrieval: %s", exc)
+                query_vec = None
         query_dim = len(query_vec) if query_vec else 0
         sql = """
             SELECT id, source, title, link_original, page, article_number, law_status,
@@ -1736,7 +1740,7 @@ class PostgresManager:
                 else:
                     clauses.append(f"{key} = %s")
                     params.append(value)
-        sql += " WHERE " + " AND ".join(clauses)
+        sql += " WHERE " + (" AND ".join(clauses) if clauses else "TRUE")
         sql += " ORDER BY lexical_rank DESC LIMIT %s"
         params.append(max(1, k * 6))
 

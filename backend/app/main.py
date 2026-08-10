@@ -32,7 +32,14 @@ async def lifespan(app: FastAPI):
     # Startup
     postgres_manager.initialize()
     embedding_service.initialize()
-    await semantic_router.classify("direitos do trabalhador em caso de despedimento")
+    try:
+        await semantic_router.classify("direitos do trabalhador em caso de despedimento")
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Semantic router warmup skipped: %s", exc
+        )
     # Shared httpx client with connection pooling — avoids creating a new TCP
     # connection per streaming request (major source of latency).
     http_client = httpx.AsyncClient(
