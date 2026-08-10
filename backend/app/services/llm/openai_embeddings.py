@@ -22,6 +22,8 @@ class OpenAIEmbeddingClient:
             "model": self.settings.openai_embedding_model,
             "input": texts,
         }
+        if self.settings.openai_embedding_dimensions > 0:
+            payload["dimensions"] = self.settings.openai_embedding_dimensions
         request = urllib.request.Request(
             f"{self.settings.openai_base_url}/embeddings",
             data=json.dumps(payload).encode("utf-8"),

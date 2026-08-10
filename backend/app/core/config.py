@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
+    openai_embedding_dimensions: int = 768
     embedding_model_type: str = "openai"
     local_embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
 
