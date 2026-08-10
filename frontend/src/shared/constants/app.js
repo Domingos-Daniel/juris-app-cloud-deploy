@@ -37,10 +37,21 @@ function isLocalHostname(hostname) {
   return normalized.endsWith('.local')
 }
 
+function resolveRuntimeApiBaseUrl() {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:8000'
+
+  const hostname = window.location.hostname
+  if (isLocalHostname(hostname)) {
+    return `${window.location.protocol}//${hostname}:8000`
+  }
+
+  if (hostname === 'jurisapp.pages.dev' || hostname.endsWith('.jurisapp.pages.dev')) {
+    return 'https://juris-app-backend.onrender.com'
+  }
+
+  return window.location.origin
+}
+
 export const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL || '').trim() ||
-  (typeof window !== 'undefined'
-    ? (isLocalHostname(window.location.hostname)
-        ? `${window.location.protocol}//${window.location.hostname}:8000`
-        : window.location.origin)
-    : 'http://127.0.0.1:8000')
+  resolveRuntimeApiBaseUrl()
