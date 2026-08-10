@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     openai_embedding_dimensions: int = 768
     embedding_model_type: str = "openai"
     local_embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    cloudflare_account_id: str = ""
+    cloudflare_api_token: str = ""
+    cloudflare_embedding_model: str = "@cf/baai/bge-m3"
+    cloudflare_embedding_timeout_seconds: float = 20.0
+    cloudflare_embedding_circuit_breaker_seconds: int = 300
 
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-v4-flash"

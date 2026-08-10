@@ -1733,6 +1733,9 @@ class PostgresManager:
             clauses.append("text_search @@ to_tsquery('portuguese', %s)")
             params.append(_fts_or_query)
 
+        lexical_clauses = list(clauses)
+        lexical_params = list(params)
+
         if query_dim:
             clauses.append("embedding IS NOT NULL")
             clauses.append("array_length(embedding, 1) = %s")
@@ -1742,16 +1745,41 @@ class PostgresManager:
                 if key.startswith("metadata__"):
                     meta_key = key.split("__", 1)[1]
                     clauses.append("metadata ->> %s = %s")
+                    lexical_clauses.append("metadata ->> %s = %s")
                     params.extend([meta_key, str(value)])
+                    lexical_params.extend([meta_key, str(value)])
                 else:
                     clauses.append(f"{key} = %s")
+                    lexical_clauses.append(f"{key} = %s")
                     params.append(value)
+                    lexical_params.append(value)
         sql += " WHERE " + (" AND ".join(clauses) if clauses else "TRUE")
         sql += " ORDER BY lexical_rank DESC LIMIT %s"
         params.append(max(1, k * 6))
 
-        return await _asyncio.to_thread(
+        results = await _asyncio.to_thread(
             self._query_legal_segments_sync, query_vec, k, sql, params
+        )
+        if results or not query_vec:
+            return results
+
+        fallback_sql = """
+            SELECT id, source, title, link_original, page, article_number, law_status,
+                   source_scope, document_id, metadata, text_content, embedding,
+                   COALESCE(ts_rank(text_search, websearch_to_tsquery('portuguese', %s)), 0) AS lexical_rank
+            FROM legal_segments
+        """
+        fallback_sql += " WHERE " + (
+            " AND ".join(lexical_clauses) if lexical_clauses else "TRUE"
+        )
+        fallback_sql += " ORDER BY lexical_rank DESC LIMIT %s"
+        fallback_params = [*lexical_params, max(1, k * 6)]
+        logger.warning(
+            "Vector retrieval returned no rows for dim=%s; falling back to lexical retrieval",
+            query_dim,
+        )
+        return await _asyncio.to_thread(
+            self._query_legal_segments_sync, None, k, fallback_sql, fallback_params
         )
 
     def _query_legal_segments_sync(

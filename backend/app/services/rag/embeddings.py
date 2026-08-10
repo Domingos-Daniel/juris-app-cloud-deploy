@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from packaging.version import Version
 from app.core.config import get_settings
+from app.services.llm.cloudflare_embeddings import cloudflare_embedding_client
 from app.services.llm.openai_embeddings import openai_embedding_client
 
 logger = logging.getLogger(__name__)
@@ -127,8 +128,11 @@ class EmbeddingService:
         if self.settings.embedding_model_type == "local":
             prefixed = [self.passage_prefix + t for t in texts]
             return await asyncio.to_thread(self._embed_local, prefixed)
-        else:
+        if self.settings.embedding_model_type == "cloudflare":
+            return await cloudflare_embedding_client.embed_texts(texts)
+        if self.settings.embedding_model_type == "openai":
             return await openai_embedding_client.embed_texts(texts)
+        raise RuntimeError(f"EMBEDDING_MODEL_TYPE invalido: {self.settings.embedding_model_type}")
 
     def _embed_local(self, texts: list[str]) -> list[list[float]]:
         embeddings = self.local_model.encode(texts, normalize_embeddings=True)
@@ -138,8 +142,12 @@ class EmbeddingService:
         if self.settings.embedding_model_type == "local":
             prefixed = self.query_prefix + text
             results = await asyncio.to_thread(self._embed_local, [prefixed])
-        else:
+        elif self.settings.embedding_model_type == "cloudflare":
+            results = await cloudflare_embedding_client.embed_texts([text])
+        elif self.settings.embedding_model_type == "openai":
             results = await openai_embedding_client.embed_texts([text])
+        else:
+            raise RuntimeError(f"EMBEDDING_MODEL_TYPE invalido: {self.settings.embedding_model_type}")
         return results[0]
 
     async def embed_texts_for_ingestion(self, texts: list[str]) -> list[list[float]]:
