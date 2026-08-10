@@ -474,8 +474,12 @@ export function ChatWorkspace({
   }, [])
 
   const handleClarifyingSelect = (text) => {
-    setQuestion(text)
+    const selected = (text || '').trim()
+    if (!selected || loading) return
+    questionRef.current = selected
+    setQuestion(selected)
     setClarifyingChosen(true)
+    requestAnimationFrame(() => handleSubmit(null))
   }
 
   const handleSubmit = async (event) => {

@@ -12,10 +12,10 @@ export function ClarifyingQuestions({ questions, onSelect }) {
           </span>
           <div className="min-w-0">
             <p className="truncate text-[13px] font-semibold tracking-[-0.01em] text-white/88">
-              Escolha o detalhe que falta
+              Responder com um detalhe
             </p>
             <p className="text-[11px] leading-4 text-white/42">
-              A resposta fica mais exacta quando o facto principal é confirmado.
+              Ao escolher uma opção, eu continuo a análise automaticamente.
             </p>
           </div>
         </div>
