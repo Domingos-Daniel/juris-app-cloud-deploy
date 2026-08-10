@@ -336,10 +336,19 @@ def _append_public_asset_coverage_if_needed(
     if not missing:
         return answer
 
-    lines = [
-        "### Artigos a ponderar",
-        "Para enquadrar melhor o caso, devem ser conferidos:",
-    ]
+    if "363" in missing:
+        lines = [
+            "### Nota importante",
+            "Para uso temporário de carro do Estado, o primeiro artigo a testar é o **Art. 363.º (peculato de uso)**. O Art. 362.º só entra se houver apropriação ou disposição ilegítima do bem.",
+            "",
+            "### Artigos a ponderar",
+            "Para enquadrar melhor o caso, devem ser conferidos:",
+        ]
+    else:
+        lines = [
+            "### Artigos a ponderar",
+            "Para enquadrar melhor o caso, devem ser conferidos:",
+        ]
     for article in missing[:5]:
         source = by_article[article]
         lines.append(
