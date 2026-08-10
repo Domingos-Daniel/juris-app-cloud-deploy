@@ -1111,7 +1111,7 @@ class RAGPipeline:
         coerced = RAGPipeline._coerce_ai_preferences(prefs)
         detail_level = coerced.get("detail_level", "normal")
         if detail_level == "breve":
-            return 260
+            return 380
         if detail_level == "detalhado":
             return 520
         if audience == "leigo":
