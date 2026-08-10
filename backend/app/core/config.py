@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-load_dotenv(BASE_DIR / ".env", override=True)
+load_dotenv(BASE_DIR / ".env", override=False)
 
 DEFAULT_TESSERACT_CMD = Path("C:/Program Files/Tesseract-OCR/tesseract.exe")
 DEFAULT_TESSDATA_DIR = BASE_DIR / "tools" / "tessdata"

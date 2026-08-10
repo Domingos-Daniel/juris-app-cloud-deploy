@@ -62,6 +62,11 @@ class CloudflareEmbeddingClient:
                 timeout=self.settings.cloudflare_embedding_timeout_seconds,
             )
         except urllib.error.HTTPError as exc:
+            if exc.code == 400 and len(texts) > 1:
+                midpoint = max(1, len(texts) // 2)
+                return self._request_embeddings(texts[:midpoint]) + self._request_embeddings(
+                    texts[midpoint:]
+                )
             self._trip(f"HTTP {exc.code}")
             raise
         except Exception as exc:
