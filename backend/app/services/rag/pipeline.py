@@ -3408,18 +3408,8 @@ class RAGPipeline:
                 "funcionário público",
                 "funcionario publico",
             )
-        ) and any(
-            marker in query_norm
-            for marker in (
-                "disciplinar",
-                "civil",
-                "penal",
-                "administrativ",
-                "responsabilidade",
-                "acidente",
-            )
         )
-        if is_public_asset_query and len(selected) < 5:
+        if is_public_asset_query:
             try:
                 from app.services.legal.retrieval import _ensure_public_asset_evidence
 
@@ -3429,6 +3419,8 @@ class RAGPipeline:
                     ),
                     limit=12,
                 )
+                combined_sources: list[SourceItem] = []
+                combined_seen: set[tuple[str, int | None, str, str | None]] = set()
                 for source in direct_sources:
                     key = (
                         source.title,
@@ -3436,12 +3428,25 @@ class RAGPipeline:
                         source.source_scope,
                         source.article_number,
                     )
-                    if key in seen:
+                    if key in combined_seen:
                         continue
-                    seen.add(key)
-                    selected.append(source)
-                    if len(selected) >= source_limit:
+                    combined_seen.add(key)
+                    combined_sources.append(source)
+                for source in selected:
+                    key = (
+                        source.title,
+                        source.page,
+                        source.source_scope,
+                        source.article_number,
+                    )
+                    if key in combined_seen:
+                        continue
+                    combined_seen.add(key)
+                    combined_sources.append(source)
+                    if len(combined_sources) >= source_limit:
                         break
+                if combined_sources:
+                    selected = combined_sources[:source_limit]
             except Exception as exc:
                 logger.warning("Failed to append public asset direct sources: %s", exc)
         admin_query = _is_admin_act_challenge_query(
