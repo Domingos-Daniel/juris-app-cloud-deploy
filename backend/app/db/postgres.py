@@ -131,9 +131,12 @@ class PostgresManager:
         if self._pool is None:
             self._pool = ConnectionPool(
                 self._require_dsn(),
-                min_size=2,
+                min_size=0,
                 max_size=10,
                 kwargs={"row_factory": dict_row, "connect_timeout": 5},
+                check=ConnectionPool.check_connection,
+                max_idle=60,
+                max_lifetime=900,
             )
         return self._pool
 
@@ -145,7 +148,10 @@ class PostgresManager:
             yield conn
             conn.commit()
         except Exception:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception as rollback_exc:
+                logger.warning("Postgres rollback skipped after connection loss: %s", rollback_exc)
             raise
         finally:
             pool.putconn(conn)
