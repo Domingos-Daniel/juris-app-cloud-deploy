@@ -127,7 +127,7 @@ ADMIN_ACT_COVERAGE_ORDER = ("9", "11", "13", "75")
 
 def _is_public_asset_multi_branch_query(query: str) -> bool:
     normalized = (query or "").casefold()
-    return any(
+    has_public_asset = any(
         marker in normalized
         for marker in (
             "carro do estado",
@@ -142,7 +142,8 @@ def _is_public_asset_multi_branch_query(query: str) -> bool:
             "funcionário público",
             "funcionario publico",
         )
-    ) and any(
+    )
+    has_consequence_context = any(
         marker in normalized
         for marker in (
             "disciplinar",
@@ -151,8 +152,14 @@ def _is_public_asset_multi_branch_query(query: str) -> bool:
             "administrativ",
             "responsabilidade",
             "acidente",
+            "bateu",
+            "colidiu",
+            "choque",
+            "danos",
+            "o que pode acontecer",
         )
     )
+    return has_public_asset and has_consequence_context
 
 
 def _is_admin_act_challenge_query(query: str) -> bool:
@@ -331,7 +338,7 @@ def _append_public_asset_coverage_if_needed(
 
     lines = [
         "### Artigos a ponderar",
-        "Para a análise não ficar limitada ao peculato de uso, também devem ser conferidos:",
+        "Para enquadrar melhor o caso, devem ser conferidos:",
     ]
     for article in missing[:5]:
         source = by_article[article]
@@ -2189,6 +2196,11 @@ class RAGPipeline:
         answer = _normalize_brackets(answer)
         answer = _personalize_pro_answer(answer, query_context)
         answer = _pro_case_source_fallback(answer, query_context, sources)
+        answer = _append_public_asset_coverage_if_needed(
+            answer, normalized_query, sources
+        )
+        answer = _append_admin_act_coverage_if_needed(answer, normalized_query, sources)
+        answer = _correct_civil_debt_burden_article(answer, normalized_query, sources)
         _tpp = _time.time() - _tpp
         logger.info("LLM:%.1fs postproc:%.1fs", _tllm, _tpp)
 
