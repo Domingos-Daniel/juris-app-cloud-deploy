@@ -49,6 +49,59 @@ def _clean(text: str) -> str:
     return updated
 
 
+def _compact_excerpt(text: str, max_chars: int = 260) -> str:
+    cleaned = re.sub(r"\s+", " ", normalize_legal_text(text or "")).strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    cut = cleaned[:max_chars].rsplit(" ", 1)[0].rstrip(" ,.;:")
+    return f"{cut}..."
+
+
+def _source_based_answer(
+    classification: LegalClassification,
+    sources: list[SourceItem],
+) -> str:
+    official_sources = [
+        source
+        for source in sources
+        if (source.excerpt or "").strip()
+        and (source.source_scope or "official") == "official"
+    ][:8]
+    if len(official_sources) < 3:
+        return ""
+
+    diploma = official_sources[0].title or "diploma recuperado"
+    lines = [
+        "### Resposta",
+        "",
+        f"Com base nas fontes oficiais recuperadas, a pergunta deve ser analisada principalmente à luz de **{diploma}**.",
+        "",
+        "### Pontos jurídicos confirmados",
+    ]
+    for source in official_sources[:6]:
+        article = f"Art. {source.article_number}.º" if source.article_number else "Artigo recuperado"
+        excerpt = _compact_excerpt(source.excerpt or "")
+        lines.append(f"- **{article}**: {excerpt}")
+
+    if classification.audience == "leigo":
+        lines.extend(
+            [
+                "",
+                "### Em linguagem simples",
+                "A resposta acima resume os artigos encontrados e mostra quais normas devem ser verificadas antes de concluir o caso. Para aplicar ao caso concreto, confirme os factos essenciais, prazos e documentos disponíveis.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "### Nota técnica",
+                "A conclusão final depende da articulação entre estes artigos, dos factos provados e de eventual jurisprudência ou regulamentação complementar aplicável.",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _extract_prompt_context_value(context: str, label: str) -> str:
     prefix = f"{label}:"
     for line in (context or "").splitlines():
@@ -1335,6 +1388,15 @@ class LegalComposer:
                     extracted = self._extract_rich_content(stripped_text)
                     if extracted:
                         text = extracted
+            if (
+                validation.answer_mode == "limited"
+                and confidence.score >= 0.4
+                and not validation.issues
+                and text.casefold().startswith("a informacao disponivel no momento")
+            ):
+                sourced = _source_based_answer(classification, sources)
+                if sourced:
+                    return normalize_legal_text(sourced).strip()
             return normalize_legal_text(text).strip()
         return ""
 
