@@ -398,11 +398,16 @@ def _is_labor_objective_direct_evidence(item: RetrievalEvidence) -> bool:
     return item.retrieval_reason == LABOR_OBJECTIVE_DISMISSAL_REASON
 
 
+def _is_relationship_property_theft_direct_evidence(item: RetrievalEvidence) -> bool:
+    return item.retrieval_reason == RELATIONSHIP_PROPERTY_THEFT_REASON
+
+
 def _is_curated_direct_evidence(item: RetrievalEvidence) -> bool:
     return item.retrieval_reason in {
         "journalist_public_interest_direct_article",
         LABOR_OBJECTIVE_DISMISSAL_REASON,
         PUBLIC_ASSET_REASON,
+        RELATIONSHIP_PROPERTY_THEFT_REASON,
         STATE_AGENT_LIABILITY_REASON,
         CIVIL_LOAN_REASON,
         ADMIN_ACT_REASON,
@@ -1285,6 +1290,7 @@ THEME_FORCE_BRANCH_WORDS = True
 THEME_SELECTION_REWRITE = True
 LABOR_OBJECTIVE_DISMISSAL_REASON = "labor_objective_dismissal_direct_article"
 PUBLIC_ASSET_REASON = "public_asset_direct_article"
+RELATIONSHIP_PROPERTY_THEFT_REASON = "relationship_property_theft_direct_article"
 STATE_AGENT_LIABILITY_REASON = "state_agent_liability_direct_article"
 CIVIL_LOAN_REASON = "civil_loan_direct_article"
 ADMIN_ACT_REASON = "admin_act_direct_article"
@@ -1311,6 +1317,46 @@ ADMIN_ACT_TARGETS = (
         136.0,
     ),
 )
+
+
+def _is_relationship_property_theft_query(text: str) -> bool:
+    normalized = _normalize(text)
+    has_relationship = any(
+        marker in normalized
+        for marker in (
+            "ex namorada",
+            "ex namorado",
+            "ex companheira",
+            "ex companheiro",
+            "ex esposa",
+            "ex marido",
+            "namorada",
+            "namorado",
+            "companheira",
+            "companheiro",
+            "casal",
+            "relação",
+            "relacao",
+        )
+    )
+    has_property_loss = any(
+        marker in normalized
+        for marker in (
+            "roubou",
+            "roubar",
+            "furtou",
+            "furtar",
+            "tirou",
+            "levou",
+            "subtraiu",
+            "ficou com",
+            "apropriou",
+            "dinheiro",
+            "kwanza",
+            "kzs",
+        )
+    )
+    return has_relationship and has_property_loss
 
 
 def _query_tokens(question: str) -> set[str]:
@@ -2331,11 +2377,45 @@ def _balance_journalist_public_interest_evidence(
     return selected or official[:limit]
 
 
+def _balance_relationship_property_theft_evidence(
+    official: list[RetrievalEvidence], limit: int = 10
+) -> list[RetrievalEvidence]:
+    selected: list[RetrievalEvidence] = []
+    seen_chunk_ids: set[str] = set()
+    quotas = {
+        "codigo-penal-lei-38-20": 4,
+        "codigo-familia-lei-1-88": 2,
+        "codigo-civil": 3,
+    }
+    counts = {slug: 0 for slug in quotas}
+
+    for item in official:
+        slug = (item.chunk.metadata or {}).get("diploma_slug")
+        if slug not in quotas or counts[slug] >= quotas[slug]:
+            continue
+        selected.append(item)
+        seen_chunk_ids.add(item.chunk.chunk_id)
+        counts[slug] += 1
+        if len(selected) >= limit:
+            return selected
+
+    for item in official:
+        if item.chunk.chunk_id in seen_chunk_ids:
+            continue
+        selected.append(item)
+        seen_chunk_ids.add(item.chunk.chunk_id)
+        if len(selected) >= limit:
+            break
+    return selected or official[:limit]
+
+
 def _limit_by_branch(
     classification: LegalClassification, official: list[RetrievalEvidence]
 ) -> list[RetrievalEvidence]:
     if any(_is_journalist_direct_evidence(item) for item in official):
         return _balance_journalist_public_interest_evidence(official, limit=10)
+    if any(_is_relationship_property_theft_direct_evidence(item) for item in official):
+        return _balance_relationship_property_theft_evidence(official, limit=10)
     if classification.main_branch != "misto":
         return official[:THEME_LIMIT_OFFICIAL]
     selected: list[RetrievalEvidence] = []
@@ -4116,6 +4196,53 @@ def _ensure_public_asset_evidence(
     return allowed[:9] if allowed else official
 
 
+def _ensure_relationship_property_theft_evidence(
+    question: str, official: list[RetrievalEvidence]
+) -> list[RetrievalEvidence]:
+    if not _is_relationship_property_theft_query(question):
+        return official
+
+    direct_targets = (
+        ("codigo-penal-lei-38-20", ("392", "394", "400", "404", "401"), 150.0),
+        ("codigo-familia-lei-1-88", ("60", "56", "57"), 132.0),
+        ("codigo-civil", ("1689", "483", "804", "805"), 126.0),
+    )
+    direct: list[RetrievalEvidence] = []
+    for slug, articles, base_score in direct_targets:
+        for index, article in enumerate(articles):
+            chunk = _best_direct_article_chunk(slug, article)
+            if chunk:
+                direct.append(
+                    RetrievalEvidence(
+                        query_used=f"{question}. Artigo nuclear recuperado: {article}",
+                        chunk=chunk,
+                        score=base_score - (index * 0.5),
+                        retrieval_reason=RELATIONSHIP_PROPERTY_THEFT_REASON,
+                        source_bucket=_source_bucket(chunk),
+                    )
+                )
+
+    combined = _dedupe_ranked(direct + official)
+    allowed: list[RetrievalEvidence] = []
+    for evidence in combined:
+        slug = (evidence.chunk.metadata or {}).get("diploma_slug")
+        articles = _evidence_article_numbers(evidence)
+        if slug == "codigo-penal-lei-38-20" and articles.intersection(
+            {"392", "394", "400", "401", "404"}
+        ):
+            allowed.append(evidence)
+        elif slug == "codigo-familia-lei-1-88" and articles.intersection(
+            {"56", "57", "60"}
+        ):
+            allowed.append(evidence)
+        elif slug == "codigo-civil" and articles.intersection(
+            {"483", "804", "805", "1689"}
+        ):
+            allowed.append(evidence)
+
+    return allowed[:10] if allowed else official
+
+
 def _ensure_journalist_leak_evidence(
     question: str, official: list[RetrievalEvidence]
 ) -> list[RetrievalEvidence]:
@@ -4427,6 +4554,7 @@ def _apply_post_filters(
 ) -> list[RetrievalEvidence]:
     filtered = _apply_penal_material_postfilter(classification, question, official)
     filtered = _ensure_public_asset_evidence(question, filtered)
+    filtered = _ensure_relationship_property_theft_evidence(question, filtered)
     filtered = _ensure_journalist_leak_evidence(question, filtered)
     filtered = _ensure_state_agent_liability_evidence(question, filtered)
     filtered = _ensure_civil_loan_evidence(classification, question, filtered)
