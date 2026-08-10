@@ -61,34 +61,43 @@ def _source_based_answer(
     classification: LegalClassification,
     sources: list[SourceItem],
 ) -> str:
+    is_leigo = classification.audience == "leigo"
+    max_sources = 4 if is_leigo else 6
+    max_excerpt_chars = 145 if is_leigo else 260
     official_sources = [
         source
         for source in sources
         if (source.excerpt or "").strip()
         and (source.source_scope or "official") == "official"
-    ][:8]
+    ][:max_sources]
     if len(official_sources) < 3:
         return ""
 
     diploma = official_sources[0].title or "diploma recuperado"
-    lines = [
-        "### Resposta",
-        "",
-        f"Com base nas fontes oficiais recuperadas, a pergunta deve ser analisada principalmente à luz de **{diploma}**.",
-        "",
-        "### Pontos jurídicos confirmados",
-    ]
-    for source in official_sources[:6]:
+    if is_leigo:
+        lines = [
+            "### Resposta",
+            "",
+            f"Pelo que foi encontrado em **{diploma}**, estes são os pontos principais:",
+        ]
+    else:
+        lines = [
+            "### Resposta",
+            "",
+            f"Com base nas fontes oficiais recuperadas, a pergunta deve ser analisada principalmente à luz de **{diploma}**.",
+            "",
+            "### Pontos jurídicos confirmados",
+        ]
+    for source in official_sources:
         article = f"Art. {source.article_number}.º" if source.article_number else "Artigo recuperado"
-        excerpt = _compact_excerpt(source.excerpt or "")
+        excerpt = _compact_excerpt(source.excerpt or "", max_excerpt_chars)
         lines.append(f"- **{article}**: {excerpt}")
 
-    if classification.audience == "leigo":
+    if is_leigo:
         lines.extend(
             [
                 "",
-                "### Em linguagem simples",
-                "A resposta acima resume os artigos encontrados e mostra quais normas devem ser verificadas antes de concluir o caso. Para aplicar ao caso concreto, confirme os factos essenciais, prazos e documentos disponíveis.",
+                "Se quiser, posso explicar estes artigos com um exemplo prático em seguida.",
             ]
         )
     else:
@@ -435,6 +444,18 @@ def _build_response_length_guidance(
             "Nao escrevas parecer longo salvo se o utilizador pedir expressamente.\n\n"
         )
 
+    if detail_level == "breve" or audience == "leigo":
+        format_rule = (
+            "Usa 3 a 4 bullets curtos."
+            if response_format == "topicos"
+            else "Usa 2 paragrafos curtos."
+        )
+        return (
+            "LIMITE DE TAMANHO: Resposta curta para utilizador final em Angola: 70 a 130 palavras, maximo 2 secoes. "
+            f"{format_rule} Inclui so a resposta essencial, ate 2 bases legais nucleares e uma orientacao pratica. "
+            "Se a pergunta tiver muitos pontos, resume e oferece aprofundar.\n\n"
+        )
+
     if detailed_request:
         return (
             "LIMITE DE TAMANHO: O utilizador pediu detalhe. Responde com profundidade moderada: "
@@ -446,17 +467,6 @@ def _build_response_length_guidance(
         return (
             "LIMITE DE TAMANHO: Resposta detalhada, mas controlada: maximo 220 palavras, ate 3 secoes e ate 6 bullets no total. "
             "Nao repitas a mesma base legal em paragrafos diferentes.\n\n"
-        )
-
-    if detail_level == "breve" or audience == "leigo":
-        format_rule = (
-            "Usa 3 a 5 bullets curtos."
-            if response_format == "topicos"
-            else "Usa 2 paragrafos curtos."
-        )
-        return (
-            "LIMITE DE TAMANHO: Resposta muito curta para utilizador final em Angola: 55 a 95 palavras, maximo 2 secoes. "
-            f"{format_rule} Inclui so a resposta essencial, 1 base legal se necessaria e uma orientacao pratica.\n\n"
         )
 
     if audience == "tecnico":

@@ -4308,22 +4308,7 @@ def _is_labor_objective_dismissal_query(
             "motivos estruturais",
         )
     )
-    has_depth_request = any(
-        term in text
-        for term in (
-            "requisitos",
-            "valido",
-            "válido",
-            "direitos",
-            "licito",
-            "lícito",
-            "ilicito",
-            "ilícito",
-            "artigos aplicaveis",
-            "artigos aplicáveis",
-        )
-    )
-    return has_dismissal and has_objective_ground and has_depth_request
+    return has_dismissal and has_objective_ground
 
 
 def _ensure_labor_objective_dismissal_evidence(
