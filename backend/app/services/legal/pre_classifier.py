@@ -31,6 +31,27 @@ DIPLOMA_PATTERNS: list[tuple[str, dict]] = [
             "force_topic_route": True,
         },
     ),
+    # Furto/burla/posse de bens em relação afectiva ou ex-casal.
+    # Ex.: "a minha ex-namorada roubou-me dinheiro e diz que era do casal".
+    (
+        r"(ex[\s-]*(namorad[ao]|companheir[ao]|marid[ao]|espos[ao])|namorad[ao]|companheir[ao]|casal|rela[çc][aã]o)"
+        r".*(roub(ou|aram|ar)|furt(ou|aram|ar)|tirou|levou|subtraiu|ficou\s+com|apropriou)"
+        r"|"
+        r"(roub(ou|aram|ar)|furt(ou|aram|ar)|tirou|levou|subtraiu|ficou\s+com|apropriou)"
+        r".*(ex[\s-]*(namorad[ao]|companheir[ao]|marid[ao]|espos[ao])|namorad[ao]|companheir[ao]|casal|rela[çc][aã]o)",
+        {
+            "main_branch": "misto",
+            "topic_route": "penal_substantivo",
+            "requested_diplomas": ["Código Penal", "Código Civil", "Código da Família"],
+            "branch_candidates": ["penal", "civil", "familia"],
+            "request_type": "passos_praticos",
+            "specificity": "factual",
+            "audience": "leigo",
+            "needs_multi_branch_handling": True,
+            "force_main_branch": True,
+            "force_topic_route": True,
+        },
+    ),
     # Sucessões / Herança
     (
         r"heran[çc]a|herdeiro|testamento|partilha\s+(de\s+)?bens|sucess[aã]o\s+leg[ií]tima|invent[aá]rio\s+obrigat[oó]rio|falec(ido|eu|imento)|deixou\s+(uma|um)\s+(casa|terreno|bem)",

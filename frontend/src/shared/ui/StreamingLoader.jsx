@@ -1,9 +1,8 @@
-import { FileUp, Search, ShieldCheck, PenLine, Sparkles } from 'lucide-react'
+import { Search, ShieldCheck, PenLine, Sparkles } from 'lucide-react'
 import { cleanAnswerBody } from '../utils/markdown'
 import LegalMarkdown from './LegalMarkdown'
 
 const PHASES = [
-  { key: 'uploading', label: 'A preparar o PDF', helper: 'A enviar e extrair texto pesquisável sem bloquear o chat.', Icon: FileUp },
   { key: 'classifying', label: 'A enquadrar a questão', helper: 'A interpretar o pedido e o ramo jurídico aplicável.', Icon: Search },
   { key: 'retrieving', label: 'A pesquisar fontes', helper: 'A cruzar legislação e contexto relevante para responder com rigor.', Icon: ShieldCheck },
   { key: 'composing', label: 'A redigir a resposta', helper: 'A transformar a análise numa resposta clara e fundamentada.', Icon: PenLine },

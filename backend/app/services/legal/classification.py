@@ -222,6 +222,17 @@ class LegalClassifier:
         pre_overrides = pre_classify(question)
         if pre_overrides:
             logger.debug("pre_classify: overrides detectados %s", pre_overrides)
+            if (
+                pre_overrides.get("force_main_branch")
+                and pre_overrides.get("force_topic_route")
+                and (
+                    pre_overrides.get("needs_clarification")
+                    or pre_overrides.get("requested_diplomas")
+                    or pre_overrides.get("requested_article_numbers")
+                )
+            ):
+                data = apply_pre_classification({}, question)
+                return _build_classification(question, data, semantic_confidence)
 
         answer = ""
         try:
