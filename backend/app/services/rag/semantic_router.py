@@ -99,6 +99,9 @@ class SemanticRouter:
         confidence: 1.0 = perfect match, 0.0 = random.
         If confidence < 0.4, the result is unreliable — fall back to LLM.
         """
+        if self.settings.embedding_model_type != "local":
+            return "indeterminado", 0.0
+
         prototypes = self._load_or_build()
         if not prototypes:
             return "indeterminado", 0.0
