@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: juris-app-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements-render.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DEFAULT_LLM_PROVIDER
+        value: deepseek
+      - key: EMBEDDING_MODEL_TYPE
+        value: openai
+      - key: POSTGRES_SCHEMA
+        value: public
+      - key: RETRIEVAL_K
+        value: "8"
+      - key: MAX_CONTEXT_CHARS
+        value: "10000"
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: "180"
+      - key: OCR_ENGINE
+        value: none
+      - key: POSTGRES_DSN
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
