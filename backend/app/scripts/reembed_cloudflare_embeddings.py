@@ -14,7 +14,9 @@ def _vector_literal(values: list[float]) -> str:
     return "{" + ",".join(f"{float(value):.12g}" for value in values) + "}"
 
 
-def _fetch_batch(limit: int, source_scope: str | None) -> list[dict]:
+def _fetch_batch(
+    limit: int, source_scope: str | None, primary_only: bool
+) -> list[dict]:
     postgres_manager.initialize()
     identity = embedding_service.vector_metadata()
     clauses = ["text_content IS NOT NULL", "length(text_content) > 0"]
@@ -22,6 +24,8 @@ def _fetch_batch(limit: int, source_scope: str | None) -> list[dict]:
     if source_scope:
         clauses.append("source_scope = %s")
         params.append(source_scope)
+    if primary_only:
+        clauses.append("coalesce((metadata->>'is_primary_source')::boolean, false)")
     clauses.append(
         "(embedding IS NULL OR embedding_provider IS DISTINCT FROM %s "
         "OR embedding_model IS DISTINCT FROM %s "
@@ -109,6 +113,7 @@ async def run(
     batch_size: int,
     source_scope: str | None,
     sleep_seconds: float,
+    primary_only: bool,
 ) -> None:
     settings = get_settings()
     if settings.embedding_model_type != "cloudflare":
@@ -116,7 +121,7 @@ async def run(
     total = 0
     started = time.time()
     while True:
-        items = _fetch_batch(batch_size, source_scope)
+        items = _fetch_batch(batch_size, source_scope, primary_only)
         if not items:
             break
         texts = [item["text_content"] for item in items]
@@ -135,8 +140,16 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=24)
     parser.add_argument("--source-scope", default="official")
     parser.add_argument("--sleep", type=float, default=0.25)
+    parser.add_argument("--primary-only", action="store_true")
     args = parser.parse_args()
-    asyncio.run(run(args.batch_size, args.source_scope or None, args.sleep))
+    asyncio.run(
+        run(
+            args.batch_size,
+            args.source_scope or None,
+            args.sleep,
+            args.primary_only,
+        )
+    )
 
 
 if __name__ == "__main__":
