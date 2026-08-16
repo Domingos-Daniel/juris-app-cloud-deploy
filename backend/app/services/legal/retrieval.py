@@ -2723,9 +2723,13 @@ def _build_queries(
         queries.append((normalized, reason, where))
 
     add(question, "base", {"source_scope": "official"})
-    planned_query = (classification.search_query or "").strip()
-    if planned_query and _normalize(planned_query) != _normalize(question):
-        add(planned_query, "semantic_plan", {"source_scope": "official"})
+    planned_queries = [
+        *(classification.search_queries or []),
+        classification.search_query or "",
+    ]
+    for planned_query in list(dict.fromkeys(item.strip() for item in planned_queries if item.strip()))[:6]:
+        if _normalize(planned_query) != _normalize(question):
+            add(planned_query, "semantic_plan", {"source_scope": "official"})
 
     route_hint = TOPIC_ROUTE_QUERY_HINTS.get(classification.topic_route)
     if route_hint:

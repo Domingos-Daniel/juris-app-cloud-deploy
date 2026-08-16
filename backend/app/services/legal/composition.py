@@ -853,6 +853,7 @@ class LegalComposer:
                 "Quando a pergunta envolver varios ramos, primeiro faz o enquadramento juridico dos factos e so depois escolhe os artigos.\n"
                 "Separa a resposta por ramos relevantes: penal, civil, administrativo/disciplinar, constitucional ou dados pessoais, conforme o contexto recuperado.\n"
                 "Nao escolhas artigos apenas por coincidencia de palavras. Explica a condicao de aplicacao de cada artigo e afasta o artigo se o facto nao preencher o seu pressuposto.\n"
+                "Nao declares que uma alternativa legal nao se aplica sem uma fonte que sustente essa exclusao; se faltar prova, apresenta-a apenas como hipotese condicionada.\n"
                 "Quando houver direitos fundamentais em conflito, identifica os interesses em tensao e aplica proporcionalidade/interesse publico se o contexto permitir.\n"
                 "Se uma responsabilidade depender de factos ainda incertos, formula perguntas de verificacao em vez de concluir de forma absoluta.\n"
                 "=== FIM DO GUIA MULTI-RAMO ===\n\n"

@@ -152,6 +152,19 @@ def _build_classification(
         data.get("clarifying_questions", [])
     )
 
+    search_query = str(data.get("search_query") or question).strip()
+    raw_search_queries = data.get("search_queries") or []
+    search_queries = list(
+        dict.fromkeys(
+            query
+            for query in [
+                *(str(item).strip() for item in raw_search_queries if str(item).strip()),
+                search_query,
+            ]
+            if query
+        )
+    )[:6]
+
     return LegalClassification(
         query_text=question,
         main_branch=main_branch,
@@ -164,7 +177,8 @@ def _build_classification(
         is_transformation=data.get("is_transformation", False),
         transformation_type=data.get("transformation_type", "none"),
         topic_route=topic_route,
-        search_query=data.get("search_query", question),
+        search_query=search_query,
+        search_queries=search_queries,
         norm_type_needed="misto",
         requires_strict_corpus_match=data.get("requires_strict_corpus_match", False),
         drafting_mode=request_type == "minuta_documental",
@@ -236,6 +250,7 @@ class LegalClassifier:
             '  "specificity": "geral"|"factual"|"follow_up",\n'
             '  "audience": "leigo"|"tecnico"|"misto",\n'
             '  "search_query": "melhores termos de pesquisa para o RAG",\n'
+            '  "search_queries": ["pesquisa jurídica específica por questão ou ramo"],\n'
             '  "requires_strict_corpus_match": true|false,\n'
             '  "requested_diplomas": ["diploma"],\n'
             '  "is_follow_up": false,\n'
@@ -252,7 +267,10 @@ class LegalClassifier:
             "Em search_query, converte os factos em termos de pesquisa jurídica: inclui institutos, "
             "nomes técnicos de possíveis tipos legais, tipos de responsabilidade e conceitos plausíveis "
             "que devam ser verificados no corpus. Não te limites a repetir a pergunta. "
-            "Não inventes números de artigos nem apresentes a hipótese como conclusão.\n\n"
+            "Não inventes números de artigos nem apresentes a hipótese como conclusão. "
+            "Em search_queries, cria até 4 pesquisas autónomas quando houver vários problemas ou ramos. "
+            "Cada pesquisa deve conservar os factos decisivos e acrescentar o instituto jurídico a verificar "
+            "(por exemplo: sujeito, conduta, bem, dano, relação funcional e tipo de responsabilidade).\n\n"
             f"Historico:\n{history_text}\n\n"
             f"Pergunta: {question}"
         )

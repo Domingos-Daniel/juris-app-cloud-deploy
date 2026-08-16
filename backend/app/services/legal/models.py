@@ -99,6 +99,7 @@ class LegalClassification(BaseModel):
     transformation_type: str = "none"
     topic_route: TopicRoute = "geral"
     search_query: str = ""
+    search_queries: list[str] = Field(default_factory=list)
     norm_type_needed: NormTypeNeeded = "misto"
     requires_strict_corpus_match: bool = False
     drafting_mode: bool = False

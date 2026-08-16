@@ -113,11 +113,18 @@ def test_retrieval_uses_original_facts_and_semantic_plan():
         main_branch="penal",
         branch_candidates=["penal"],
         search_query="peculato de uso abuso de funções património público",
+        search_queries=[
+            "peculato de uso viatura pública fins privados",
+            "responsabilidade civil agente público acidente",
+        ],
     )
     queries = _build_queries(question, classification, None)
-    by_reason = {reason: query for query, reason, _ in queries}
-    assert by_reason["base"] == question
-    assert by_reason["semantic_plan"] == classification.search_query
+    assert any(query == question and reason == "base" for query, reason, _ in queries)
+    semantic_queries = {
+        query for query, reason, _ in queries if reason == "semantic_plan"
+    }
+    assert set(classification.search_queries).issubset(semantic_queries)
+    assert classification.search_query in semantic_queries
 
 
 def test_retrieval_quality_requests_correction_for_irrelevant_article():
