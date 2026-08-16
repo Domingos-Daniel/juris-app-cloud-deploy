@@ -391,11 +391,17 @@ _EXPLICIT_DIPLOMA_ALIASES: tuple[tuple[re.Pattern[str], str], ...] = (
 
 
 def _explicit_requested_diplomas(question: str) -> list[str]:
-    requested = [
-        diploma
-        for pattern, diploma in _EXPLICIT_DIPLOMA_ALIASES
-        if pattern.search(question)
-    ]
+    requested: list[str] = []
+    for pattern, diploma in _EXPLICIT_DIPLOMA_ALIASES:
+        for match in pattern.finditer(question):
+            prefix = question[max(0, match.start() - 45) : match.start()].casefold()
+            if re.search(
+                r"(?:não|nao)\s+(?:confunda|confundir|considere|considerar|use|usar|é|e)\b[^.!?]*$",
+                prefix,
+            ):
+                continue
+            requested.append(diploma)
+            break
     law_reference = re.compile(
         r"(?:Lei|Decreto(?:[\s-]Lei)?)\s+(?:n\S*\s+)?\d+\s*[/\-]\s*\d{2,4}",
         re.IGNORECASE,

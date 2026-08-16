@@ -4,22 +4,56 @@ import argparse
 import asyncio
 import json
 import math
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from app.db.postgres import postgres_manager
 from app.services.rag.retriever import retriever_service
+from app.services.rag.vector_store import legislation_vector_store
 
 
 @dataclass(slots=True)
 class BenchmarkMetrics:
     cases: int
+    exact_cases: int
+    semantic_cases: int
+    exact_article_resolution: float
+    semantic_article_recall_at_10: float
     article_recall_at_10: float
     diploma_top_3_accuracy: float
     mean_reciprocal_rank: float
     ndcg_at_10: float
     average_latency_seconds: float
+
+
+ARTICLE_ONLY_RE = re.compile(r"^(?:artigo|art\.)\s*\d+[.º°\s]*$", re.IGNORECASE)
+
+
+def _semantic_heading(row: dict) -> str:
+    def clean(value: str) -> str:
+        value = re.sub(r"\s+", " ", value).strip(" ()\t")
+        value = re.sub(
+            r"^(?:artigo|art\.)\s*\d+[.º°\"\s]*(?:[-–—:]\s*)?",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        ).strip(" ()\t")
+        value = re.sub(r"(?:\s*\.\s*){3,}.*$", "", value).strip(" .()\t")
+        return value
+
+    metadata = row.get("metadata") or {}
+    for key in ("article_heading", "heading", "section_title"):
+        value = clean(str(metadata.get(key) or ""))
+        if len(value) >= 8 and not ARTICLE_ONLY_RE.match(value):
+            return value
+    for line in (row.get("text_content") or "").splitlines():
+        value = clean(line)
+        if len(value) < 8 or ARTICLE_ONLY_RE.match(value) or "..." in value:
+            continue
+        return value[:220]
+    return ""
 
 
 def _gold_cases(limit: int) -> list[dict]:
@@ -37,19 +71,24 @@ def _gold_cases(limit: int) -> list[dict]:
             ORDER BY md5(id::text)
             LIMIT %s
             """,
-            (limit,),
+            (limit * 4,),
         )
         rows = list(cur.fetchall())
     cases: list[dict] = []
     for index, row in enumerate(rows):
         article = str(row["article_main"])
-        heading = (row["text_content"] or "").splitlines()[0][:180]
+        heading = _semantic_heading(row)
+        case_type = "exact" if index % 2 == 0 else "semantic"
+        if case_type == "semantic" and not heading:
+            continue
         question = (
             f"O que estabelece o Art. {article} do diploma {row['title']}?"
-            if index % 2 == 0
-            else f"Explique em linguagem simples esta matéria jurídica: {heading}"
+            if case_type == "exact"
+            else f"Qual é o regime jurídico de {heading}?"
         )
-        cases.append({**row, "question": question})
+        cases.append({**row, "question": question, "case_type": case_type})
+        if len(cases) >= limit:
+            break
     return cases
 
 
@@ -58,6 +97,10 @@ async def run(limit: int, concurrency: int) -> dict:
     reciprocal_ranks: list[float] = []
     ndcgs: list[float] = []
     article_hits = 0
+    exact_hits = 0
+    semantic_hits = 0
+    exact_cases = 0
+    semantic_cases = 0
     diploma_hits = 0
     latencies: list[float] = []
     failures: list[dict] = []
@@ -66,11 +109,20 @@ async def run(limit: int, concurrency: int) -> dict:
     async def retrieve_case(case: dict) -> tuple[dict, list, float]:
         async with semaphore:
             started = time.perf_counter()
-            chunks = await retriever_service.retrieve(
-                case["question"],
-                k=10,
-                where={"source_scope": "official"},
-            )
+            if case["case_type"] == "exact":
+                chunks = await asyncio.to_thread(
+                    legislation_vector_store.find_article_chunks,
+                    case["diploma_slug"],
+                    str(case["article_main"]),
+                    None,
+                    10,
+                )
+            else:
+                chunks = await retriever_service.retrieve(
+                    case["question"],
+                    k=10,
+                    where={"source_scope": "official"},
+                )
             return case, chunks, time.perf_counter() - started
 
     results = await asyncio.gather(*(retrieve_case(case) for case in cases))
@@ -88,6 +140,10 @@ async def run(limit: int, concurrency: int) -> dict:
                 article_rank = rank
         if article_rank:
             article_hits += 1
+            if case["case_type"] == "exact":
+                exact_hits += 1
+            else:
+                semantic_hits += 1
             reciprocal_ranks.append(1.0 / article_rank)
             ndcgs.append(1.0 / math.log2(article_rank + 1))
         else:
@@ -107,12 +163,20 @@ async def run(limit: int, concurrency: int) -> dict:
                     ],
                 }
             )
+        if case["case_type"] == "exact":
+            exact_cases += 1
+        else:
+            semantic_cases += 1
         if any(chunk.title == case["title"] for chunk in ranked[:3]):
             diploma_hits += 1
 
     count = max(1, len(cases))
     metrics = BenchmarkMetrics(
         cases=len(cases),
+        exact_cases=exact_cases,
+        semantic_cases=semantic_cases,
+        exact_article_resolution=exact_hits / max(1, exact_cases),
+        semantic_article_recall_at_10=semantic_hits / max(1, semantic_cases),
         article_recall_at_10=article_hits / count,
         diploma_top_3_accuracy=diploma_hits / count,
         mean_reciprocal_rank=sum(reciprocal_ranks) / count,

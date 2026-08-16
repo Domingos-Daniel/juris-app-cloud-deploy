@@ -2287,6 +2287,7 @@ def _generic_official_selection(
     classification: LegalClassification,
     ranked: list[RetrievalEvidence],
     *,
+    question: str = "",
     limit: int = THEME_LIMIT_OFFICIAL,
 ) -> list[RetrievalEvidence]:
     """Select official evidence without scenario or article-specific rules."""
@@ -2314,6 +2315,20 @@ def _generic_official_selection(
             continue
         candidates.append(evidence)
 
+    if question:
+        query_stems = {
+            _concept_search_stem(token)
+            for token in _query_tokens(question)
+            if len(token) >= 4
+        }
+
+        def relevance(evidence: RetrievalEvidence) -> float:
+            text = _normalize(evidence.chunk.text)
+            overlap = sum(stem in text for stem in query_stems if stem)
+            return evidence.score + min(9.0, overlap * 0.9)
+
+        candidates.sort(key=relevance, reverse=True)
+
     if not candidates:
         return []
 
@@ -2331,10 +2346,6 @@ def _generic_official_selection(
         selected.append(evidence)
         seen.add(evidence.chunk.chunk_id)
 
-    for evidence in candidates:
-        if evidence.retrieval_reason in protected_reasons:
-            add(evidence)
-
     if requested_branches:
         branch_quota = max(2, limit // len(requested_branches))
         for branch in requested_branches:
@@ -2345,6 +2356,10 @@ def _generic_official_selection(
             ]
             for evidence in branch_items[:branch_quota]:
                 add(evidence)
+
+    for evidence in candidates:
+        if evidence.retrieval_reason in protected_reasons:
+            add(evidence)
 
     for evidence in candidates:
         add(evidence)
@@ -3170,7 +3185,9 @@ class LegalRetrievalService:
                     )
         ranked = [item for item in ranked if item.score > 0.5]
 
-        official = _generic_official_selection(classification, ranked)
+        official = _generic_official_selection(
+            classification, ranked, question=question
+        )
         official = _promote_jurisprudence_if_requested(
             classification, question, official
         )
@@ -3201,6 +3218,7 @@ class LegalRetrievalService:
             official = _generic_official_selection(
                 classification,
                 official + additions,
+                question=question,
                 limit=30,
             )
             assessment = retrieval_quality_evaluator.assess(
