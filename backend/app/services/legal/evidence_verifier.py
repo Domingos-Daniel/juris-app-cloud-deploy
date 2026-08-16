@@ -7,7 +7,7 @@ from app.services.legal.models import RetrievalEvidence
 
 
 NEGATIVE_CLAIM_RE = re.compile(
-    r"\b(?:não|nao)\s+(?:existe|há|ha|pode|possui|tem|compete|pratica|responde|incorre|constitui|configura|é permitido|e permitido|se aplica)\b",
+    r"\b(?:não|nao)\s+(?:sendo\s+[^.!?]{0,40}\s+)?(?:existe|há|ha|pode|possui|tem|compete|pratica|responde|incorre|constitui|configura(?:d[oa])?|é permitido|e permitido|se aplica)\b",
     re.IGNORECASE,
 )
 EXPLICIT_NEGATIVE_EVIDENCE = (

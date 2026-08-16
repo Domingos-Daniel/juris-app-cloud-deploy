@@ -1706,12 +1706,16 @@ class RAGPipeline:
 
             if all_evidences:
                 all_evidences = self._with_branch_coverage(
-                    all_evidences, MAX_OFFICIAL_EVIDENCES, classification
+                    all_evidences,
+                    MAX_OFFICIAL_EVIDENCES,
+                    classification,
+                    normalized_query,
                 )
             combined_evidences = self._with_branch_coverage(
                 all_evidences + all_user_evidences,
                 MAX_COMBINED_EVIDENCES,
                 classification,
+                normalized_query,
             )
             if combined_evidences:
                 retrieval = RetrievalResult(
@@ -2792,12 +2796,16 @@ class RAGPipeline:
                 all_user_evidences.extend(direct_current.user_evidence)
             if all_evidences:
                 all_evidences = self._with_branch_coverage(
-                    all_evidences, MAX_OFFICIAL_EVIDENCES, classification
+                    all_evidences,
+                    MAX_OFFICIAL_EVIDENCES,
+                    classification,
+                    normalized_query,
                 )
             combined_evidences = self._with_branch_coverage(
                 all_evidences + all_user_evidences,
                 MAX_COMBINED_EVIDENCES,
                 classification,
+                normalized_query,
             )
             if combined_evidences:
                 retrieval = RetrievalResult(
@@ -3582,7 +3590,9 @@ class RAGPipeline:
         return selected
 
     @staticmethod
-    def _with_branch_coverage(evidences: list, limit: int, classification) -> list:
+    def _with_branch_coverage(
+        evidences: list, limit: int, classification, question: str = ""
+    ) -> list:
         branches = [
             branch
             for branch in getattr(classification, "branch_candidates", [])
@@ -3593,7 +3603,28 @@ class RAGPipeline:
                 evidences, limit, getattr(classification, "main_branch", None)
             )
 
-        ordered = sorted(evidences, key=lambda evidence: evidence.score, reverse=True)
+        query_terms = {
+            token[:7]
+            for token in re.findall(r"[\wÀ-ÿ-]+", (question or "").casefold())
+            if len(token) >= 5
+            and token
+            not in {
+                "analise",
+                "avaliar",
+                "avaliação",
+                "jurídico",
+                "juridico",
+                "responsabilidade",
+                "responsabilidades",
+            }
+        }
+
+        def rank_score(evidence) -> float:
+            text = (evidence.chunk.text or "").casefold()
+            overlap = sum(term in text for term in query_terms)
+            return evidence.score + min(12.0, overlap * 1.5)
+
+        ordered = sorted(evidences, key=rank_score, reverse=True)
         selected: list = []
         seen: set[tuple] = set()
 
