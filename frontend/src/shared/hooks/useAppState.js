@@ -129,6 +129,7 @@ function mapChatFromApi(chat) {
       confidence: message.confidence || null,
       validation_issues: message.validation_issues || [],
       clarifying_questions: message.clarifying_questions || [],
+      clarification_request: message.clarification_request || null,
       legal_basis: message.legal_basis || [],
       verified_articles: message.verified_articles || [],
       classification: message.classification || null,
@@ -275,7 +276,7 @@ export function useAppState(token) {
     }))
   }
 
-  const appendMessagePair = ({ chat_id, question, answer, sources, provider_used, createdAt, active_document_id, answer_mode, confidence, validation_issues, clarifying_questions, legal_basis, verified_articles, classification, suggested_actions, editMessageIndex = -1 }) => {
+  const appendMessagePair = ({ chat_id, question, answer, sources, provider_used, createdAt, active_document_id, answer_mode, confidence, validation_issues, clarifying_questions, clarification_request, legal_basis, verified_articles, classification, suggested_actions, editMessageIndex = -1 }) => {
     persistWith((current) => {
       const active =
         current.conversations.find((item) => item.id === current.activeConversationId) || {
@@ -305,6 +306,7 @@ export function useAppState(token) {
         confidence: confidence || null,
         validation_issues: validation_issues || [],
         clarifying_questions: clarifying_questions || [],
+        clarification_request: clarification_request || null,
         legal_basis: legal_basis || [],
         verified_articles: verified_articles || [],
         classification: classification || null,

@@ -104,15 +104,16 @@ export function ChatWorkspace({
   const [loadingElapsedMs, setLoadingElapsedMs] = useState(0)
   const [showBackToBottom, setShowBackToBottom] = useState(false)
   const [pendingAttachment, setPendingAttachment] = useState(null)
-  const [clarifyingChosen, setClarifyingChosen] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
   const [streamingPhase, setStreamingPhase] = useState('idle')
+  const [streamingStatus, setStreamingStatus] = useState('')
   const [conversationLoading, setConversationLoading] = useState(false)
   const [editingMsgId, setEditingMsgId] = useState(null)
   const [composerFocused, setComposerFocused] = useState(false)
   const [usageMeta, setUsageMeta] = useState(currentUser?.usage || null)
   const prevConversationIdRef = useRef(null)
   const questionRef = useRef('')
+  const clarificationContextRef = useRef(null)
   const editIndexRef = useRef(-1)
   const voiceModeRef = useRef(false)
   const voiceSubmittedRef = useRef(false)
@@ -372,6 +373,7 @@ export function ChatWorkspace({
       confidence: message.confidence || null,
       validation_issues: message.validation_issues || [],
       clarifying_questions: message.clarifying_questions || [],
+      clarification_request: message.clarification_request || null,
       legal_basis: message.legal_basis || [],
       verified_articles: message.verified_articles || [],
       classification: message.classification || null,
@@ -455,6 +457,22 @@ export function ChatWorkspace({
     })
   }, [selectedConversation])
 
+  const pendingClarification = useMemo(() => {
+    const items = selectedConversation?.messages || []
+    const assistant = items.at(-1)
+    if (!assistant || assistant.role !== 'assistant' || assistant.answer_mode !== 'clarifying') return null
+    const original = items.at(-2)
+    const request = assistant.clarification_request || {
+      question: assistant.clarifying_questions?.[0] || '',
+      options: [],
+    }
+    if (!request.question || original?.role !== 'user') return null
+    return {
+      original_question: request.original_question || original.content,
+      question: request.question,
+    }
+  }, [selectedConversation])
+
   const handleEditUserMessage = useCallback((msgId) => {
     setEditingMsgId(msgId)
   }, [])
@@ -470,15 +488,21 @@ export function ChatWorkspace({
     setLoading(false)
     setLoadingElapsedMs(0)
     setStreamingPhase('idle')
+    setStreamingStatus('')
     setStreamingContent('')
+    clarificationContextRef.current = null
   }, [])
 
-  const handleClarifyingSelect = (text) => {
+  const handleClarifyingSelect = (text, request, originalQuestion) => {
     const selected = (text || '').trim()
     if (!selected || loading) return
+    clarificationContextRef.current = {
+      original_question: originalQuestion,
+      question: request?.question || '',
+      answer: selected,
+    }
     questionRef.current = selected
     setQuestion(selected)
-    setClarifyingChosen(true)
     requestAnimationFrame(() => handleSubmit(null))
   }
 
@@ -492,6 +516,9 @@ export function ChatWorkspace({
       return
     }
     const attachmentToUpload = pendingAttachment
+    const clarificationContext = clarificationContextRef.current || (
+      pendingClarification ? { ...pendingClarification, answer: normalized } : null
+    )
 
     setQuestion('')  // Clear immediately for UX
 
@@ -503,9 +530,9 @@ export function ChatWorkspace({
     finalResponseScrollRef.current = false
     setError('')
     setPendingUserQuestion(normalized || (attachmentToUpload ? `A processar ${attachmentToUpload.name}` : 'Processar PDF anexado'))
-    setClarifyingChosen(false)
     setStreamingContent('')
     setStreamingPhase(attachmentToUpload ? 'uploading' : 'classifying')
+    setStreamingStatus(attachmentToUpload ? 'A preparar o documento.' : 'A analisar a sua questão.')
 
     let accumulated = ''
     const ctx = { cancelled: false }
@@ -541,15 +568,20 @@ export function ChatWorkspace({
         activeDocumentId,
         authToken,
         abortController.signal,
+        clarificationContext,
       )
 
       setStreamingPhase('retrieving')
+      setStreamingStatus('A pesquisar legislação e jurisprudência relevantes.')
       let finalMeta = null
 
       for await (const chunk of stream) {
         if (ctx.cancelled) break
         if (chunk.phase) {
           setStreamingPhase(chunk.phase)
+        }
+        if (chunk.status) {
+          setStreamingStatus(chunk.status)
         }
         if (chunk.token) {
           setStreamingPhase('composing')
@@ -577,6 +609,7 @@ export function ChatWorkspace({
           confidence: finalMeta.confidence,
           validation_issues: finalMeta.validation_issues || [],
           clarifying_questions: finalMeta.clarifying_questions || [],
+          clarification_request: finalMeta.clarification_request || null,
           legal_basis: finalMeta.legal_basis || [],
           verified_articles: finalMeta.verified_articles || [],
           classification: finalMeta.classification || null,
@@ -613,6 +646,7 @@ export function ChatWorkspace({
       setPendingUserQuestion('')
       setStreamingContent('')
       setStreamingPhase('idle')
+      setStreamingStatus('')
       editIndexRef.current = -1
       questionRef.current = ''
     } catch (err) {
@@ -628,12 +662,15 @@ export function ChatWorkspace({
       setPendingUserQuestion('')
       setStreamingContent('')
       setStreamingPhase('idle')
+      setStreamingStatus('')
       questionRef.current = ''
+      clarificationContextRef.current = null
     } finally {
       setLoading(false)
       setLoadingElapsedMs(0)
       activeStreamRef.current = null
       abortRef.current = null
+      clarificationContextRef.current = null
     }
   }
 
@@ -753,11 +790,17 @@ export function ChatWorkspace({
                   confidence={message.confidence}
                   validationIssues={message.validation_issues}
                   clarifyingQuestions={message.clarifying_questions}
+                  clarificationRequest={message.clarification_request}
+                  clarificationPending={!loading && message.answer_mode === 'clarifying' && idx === messages.length - 1}
                   legalBasis={message.legal_basis}
                   verifiedArticles={message.verified_articles}
                   classification={message.classification}
                   onSelectRef={onSelectSourceRef}
-                  onClarifyingSelect={handleClarifyingSelect}
+                  onClarifyingSelect={(answer, request) => handleClarifyingSelect(
+                    answer,
+                    request,
+                    request?.original_question || (messages[idx - 1]?.role === 'user' ? messages[idx - 1].content : ''),
+                  )}
                   onEdit={!loading && message.id !== 'pending-user' ? () => handleEditUserMessage(message.id) : undefined}
                   messageId={message.id}
                   isEditing={editingMsgId === message.id}
@@ -777,6 +820,7 @@ export function ChatWorkspace({
               <StreamingLoader
                 content={streamingContent}
                 phase={streamingPhase}
+                status={streamingStatus}
                 elapsedMs={loadingElapsedMs}
               />
             </div>

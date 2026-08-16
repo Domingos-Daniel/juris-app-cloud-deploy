@@ -116,7 +116,7 @@ export async function preflightChatQuestion(question, provider, conversationHist
   return response.json()
 }
 
-export async function sendChatQuestionStream(question, provider, conversationHistory = [], chatId = null, activeDocumentId = null, token = '', signal = null) {
+export async function sendChatQuestionStream(question, provider, conversationHistory = [], chatId = null, activeDocumentId = null, token = '', signal = null, clarificationContext = null) {
   const response = await fetch(`${API_BASE_URL}/chat/stream`, {
     method: 'POST',
     headers: {
@@ -129,6 +129,7 @@ export async function sendChatQuestionStream(question, provider, conversationHis
       conversation_history: conversationHistory,
       chat_id: chatId,
       active_document_id: activeDocumentId,
+      clarification_context: clarificationContext,
     }),
     signal,
   })

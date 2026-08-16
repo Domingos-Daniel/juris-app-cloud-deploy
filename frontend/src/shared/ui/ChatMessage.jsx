@@ -111,7 +111,7 @@ function CitationCard({ item, index, verification }) {
   )
 }
 
-export function ChatMessage({ role, content, createdAt, sourceRefs = [], answerMode = null, clarifyingQuestions = [], legalBasis = [], verifiedArticles = [], classification = null, validationIssues = [], confidence = null, onSelectRef, onClarifyingSelect, onEdit, messageId, isEditing, onSaveEdit, onCancelEdit, versionInfo, onNavigateVersion, suggestedActions = [], onSelectAction }) {
+export function ChatMessage({ role, content, createdAt, sourceRefs = [], answerMode = null, clarifyingQuestions = [], clarificationRequest = null, clarificationPending = false, legalBasis = [], verifiedArticles = [], classification = null, validationIssues = [], confidence = null, onSelectRef, onClarifyingSelect, onEdit, messageId, isEditing, onSaveEdit, onCancelEdit, versionInfo, onNavigateVersion, suggestedActions = [], onSelectAction }) {
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [legalBasisOpen, setLegalBasisOpen] = useState(false)
   const isUser = role === 'user'
@@ -189,8 +189,13 @@ export function ChatMessage({ role, content, createdAt, sourceRefs = [], answerM
                 </p>
               </div>
             </div>
-            {clarifyingQuestions.length > 0 ? (
-              <ClarifyingQuestions questions={clarifyingQuestions} onSelect={onClarifyingSelect} />
+            {clarificationRequest || clarifyingQuestions.length > 0 ? (
+              <ClarifyingQuestions
+                request={clarificationRequest}
+                questions={clarifyingQuestions}
+                onSelect={onClarifyingSelect}
+                disabled={!clarificationPending}
+              />
             ) : null}
           </div>
         ) : isRefused ? (

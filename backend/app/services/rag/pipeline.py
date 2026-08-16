@@ -759,6 +759,7 @@ from app.services.legal.article_numbers import extract_requested_article_numbers
 from app.services.legal.article_verifier import article_verifier
 from app.services.llm.deepseek_client import deepseek_client
 from app.services.legal.models import (
+    ClarificationPrompt,
     ConfidenceResult,
     RetrievalEvidence,
     ValidationIssue,
@@ -848,6 +849,13 @@ CLARIFYING_QUESTIONS_GENERAL = [
 ]
 
 
+def _clarification_prompt(question: str, options: list[str]) -> ClarificationPrompt:
+    return ClarificationPrompt(
+        question=question,
+        options=list(dict.fromkeys(option.strip() for option in options if option.strip()))[:4],
+    )
+
+
 def _extract_case_subject(query: str) -> str:
     cleaned = re.sub(r"\s+", " ", (query or "").strip())
     if not cleaned:
@@ -859,7 +867,7 @@ def _contextual_clarifying_questions(
     query: str,
     classification,
 ) -> list[str]:
-    normalized = _normalize(query)
+    normalized = normalize_legal_text(query).casefold()
     subject = _extract_case_subject(query)
 
     if any(term in normalized for term in ("policia", "polícia", "prendeu", "detido", "detencao", "detenção")):
@@ -894,6 +902,43 @@ def _contextual_clarifying_questions(
             "Pretende orientação prática, artigos aplicáveis, minuta/queixa ou avaliação de riscos?",
         ]
     return CLARIFYING_QUESTIONS_GENERAL
+
+
+def _contextual_clarification_prompts(
+    query: str,
+    classification,
+) -> list[ClarificationPrompt]:
+    normalized = normalize_legal_text(query).casefold()
+
+    if any(term in normalized for term in ("policia", "polícia", "prendeu", "detido", "detencao", "detenção")):
+        return [_clarification_prompt(
+            "Qual é a situação atual depois da intervenção da polícia?",
+            ["Fomos libertados", "Continuamos detidos", "Fomos levados à esquadra ou tribunal", "Não sei informar"],
+        )]
+    if any(term in normalized for term in ("despedido", "despedimento", "contrato", "salario", "salário", "trabalhador")):
+        return [_clarification_prompt(
+            "Que tipo de vínculo laboral existia?",
+            ["Contrato por tempo indeterminado", "Contrato a termo", "Acordo verbal ou sem contrato escrito", "Não sei informar"],
+        )]
+    if any(term in normalized for term in ("roubou", "furto", "furtou", "burla", "dinheiro", "kz", "kzs")):
+        return [_clarification_prompt(
+            "Como esse dinheiro ou bem chegou à posse da outra pessoa?",
+            ["Foi retirado sem autorização", "Entreguei como empréstimo", "Era bem ou dinheiro comum", "Não sei informar"],
+        )]
+    if any(term in normalized for term in ("terreno", "casa", "propriedade", "posse", "despejo")):
+        return [_clarification_prompt(
+            "Que documento ou prova possui sobre o imóvel?",
+            ["Registo predial ou escritura", "Contrato ou declaração de compra", "Declaração administrativa ou do soba", "Apenas posse de facto"],
+        )]
+    if classification.main_branch != "indeterminado":
+        return [_clarification_prompt(
+            "Qual é o principal resultado que pretende obter?",
+            ["Conhecer os meus direitos", "Saber os passos e prazos", "Avaliar riscos ou responsabilidade", "Identificar os artigos aplicáveis"],
+        )]
+    return [_clarification_prompt(
+        "Qual é a área mais próxima do problema que pretende resolver?",
+        ["Trabalho", "Família ou património", "Crime ou polícia", "Administração pública ou impostos"],
+    )]
 
 CLARIFYING_QUESTIONS_FOLLOW_UP = [
     "Pretende que eu aprofunde a resposta anterior, compare com outra norma ou transforme em passos praticos?",
@@ -969,6 +1014,83 @@ def _default_clarifying_questions(
     ) and _looks_short_follow_up_prompt(query):
         return CLARIFYING_QUESTIONS_FOLLOW_UP
     return _contextual_clarifying_questions(query, classification)
+
+
+def _default_clarification_prompts(
+    query: str,
+    classification,
+    history: list[str],
+    chat_state: dict | None,
+) -> list[ClarificationPrompt]:
+    if _has_follow_up_context(history, classification, chat_state) and _looks_short_follow_up_prompt(query):
+        return [_clarification_prompt(
+            "Que parte da resposta anterior pretende aprofundar?",
+            ["Artigos aplicáveis", "Prazos e procedimento", "Provas necessárias", "Riscos e alternativas"],
+        )]
+    return _contextual_clarification_prompts(query, classification)
+
+
+def _ensure_clarification_prompts(
+    query: str,
+    classification,
+    history: list[str],
+    chat_state: dict | None,
+) -> None:
+    prompts = list(getattr(classification, "clarification_prompts", []) or [])
+    prompts = [prompt for prompt in prompts if prompt.question.strip()]
+    if not prompts or not prompts[0].options:
+        prompts = _default_clarification_prompts(query, classification, history, chat_state)
+    classification.clarification_prompts = prompts[:1]
+    classification.clarifying_questions = [prompt.question for prompt in prompts[:1]]
+
+
+def _clarification_enriched_query(query: str, clarification_context: dict | None) -> str:
+    if not clarification_context:
+        return query
+    original = str(clarification_context.get("original_question") or "").strip()
+    prompt = str(clarification_context.get("question") or "").strip()
+    answer = str(clarification_context.get("answer") or query).strip()
+    if not original or not prompt or not answer:
+        return query
+    return (
+        f"Pergunta original do utilizador: {original}\n"
+        f"Esclarecimento solicitado: {prompt}\n"
+        f"Resposta do utilizador ao esclarecimento: {answer}"
+    )
+
+
+def _clarification_repeats_previous(classification, clarification_context: dict | None) -> bool:
+    if not clarification_context or not classification.clarification_prompts:
+        return False
+    previous = normalize_legal_text(str(clarification_context.get("question") or "")).casefold().strip(" .?!")
+    current = normalize_legal_text(classification.clarification_prompts[0].question).casefold().strip(" .?!")
+    return bool(previous and current and previous == current)
+
+
+def _progressive_clarification_prompt(clarification_context: dict | None) -> ClarificationPrompt | None:
+    if not clarification_context:
+        return None
+    original = normalize_legal_text(str(clarification_context.get("original_question") or "")).casefold()
+    previous = normalize_legal_text(str(clarification_context.get("question") or "")).casefold()
+    answer = normalize_legal_text(str(clarification_context.get("answer") or "")).casefold()
+    if len(original.split()) > 8 or not any(term in previous for term in ("area", "área")):
+        return None
+    if "trabalho" in answer:
+        return _clarification_prompt("O que aconteceu concretamente na relação de trabalho?", ["Fui despedido", "Não recebi salário ou outros valores", "Tive um acidente de trabalho", "É outra situação laboral"])
+    if any(term in answer for term in ("criminal", "crime", "policia", "polícia")):
+        return _clarification_prompt("Qual é a situação criminal ou policial que pretende analisar?", ["Fui detido ou chamado pela polícia", "Fui vítima de um crime", "Fui acusado de um crime", "É outra situação penal"])
+    if any(term in answer for term in ("familia", "família", "patrimonio", "património")):
+        return _clarification_prompt("Qual é o conflito familiar ou patrimonial principal?", ["Divórcio ou união", "Guarda ou alimentos de filhos", "Herança", "Bens, dívida ou propriedade"])
+    return _clarification_prompt("O que aconteceu concretamente e o que pretende resolver?", ["Quero conhecer os meus direitos", "Quero recuperar um valor ou bem", "Quero contestar uma decisão", "Prefiro escrever os detalhes"])
+
+
+def _apply_progressive_clarification(classification, clarification_context: dict | None) -> None:
+    prompt = _progressive_clarification_prompt(clarification_context)
+    if not prompt:
+        return
+    classification.needs_clarification = True
+    classification.clarification_prompts = [prompt]
+    classification.clarifying_questions = [prompt.question]
 
 
 def _should_refresh_clarifying_questions(questions: list[str] | None) -> bool:
@@ -1503,14 +1625,16 @@ class RAGPipeline:
         active_document_id: str | None = None,
         user_id: str | int | None = None,
         query_context: str | None = None,
+        clarification_context: dict | None = None,
     ) -> ChatResponse:
         normalized_query = (query or "").strip()
         if not normalized_query:
             raise ValueError("A pergunta não pode estar vazia.")
+        analysis_query = _clarification_enriched_query(normalized_query, clarification_context)
         effective_query = (
-            f"{normalized_query}\n\n{query_context.strip()}"
+            f"{analysis_query}\n\n{query_context.strip()}"
             if query_context and query_context.strip()
-            else normalized_query
+            else analysis_query
         )
 
         current_chat_id = chat_id
@@ -1541,6 +1665,7 @@ class RAGPipeline:
         classification = _apply_deterministic_context_override(
             effective_query, classification
         )
+        _apply_progressive_clarification(classification, clarification_context)
         # Augment conversation context with classification's diploma detection
         if classification.requested_diplomas:
             _conv_diploma_names.extend(classification.requested_diplomas)
@@ -1550,7 +1675,11 @@ class RAGPipeline:
                 _conv_diploma_slug = _conv_diploma_slug or next(iter(_req_slugs))
 
         # Detect very vague or off-topic queries using classifier's own output metrics
-        if (
+        if active_document_id:
+            classification.needs_clarification = False
+            classification.clarifying_questions = []
+            classification.clarification_prompts = []
+        elif (
             not classification.needs_clarification
             and not classification.clarifying_questions
         ):
@@ -1571,6 +1700,13 @@ class RAGPipeline:
             classification.clarifying_questions = _default_clarifying_questions(
                 normalized_query, classification, history, chat_state
             )
+
+        if classification.needs_clarification:
+            _ensure_clarification_prompts(normalized_query, classification, history, chat_state)
+            if _clarification_repeats_previous(classification, clarification_context):
+                classification.needs_clarification = False
+                classification.clarifying_questions = []
+                classification.clarification_prompts = []
 
         # Multi-topic detection: force multi-branch when query has "E" separating topics
         if (
@@ -1652,9 +1788,32 @@ class RAGPipeline:
                     active_document_id=active_document_id,
                     user_id=user_id,
                 )
-            postgres_manager.save_query(
-                question=normalized_query, answer=clarifying_answer
+            clarification_request = (
+                classification.clarification_prompts[0].model_dump()
+                if classification.clarification_prompts else None
             )
+            if clarification_request is not None:
+                clarification_request["original_question"] = (
+                    str((clarification_context or {}).get("original_question") or "").strip()
+                    or normalized_query
+                )
+            stored_answer = clarifying_answer
+            if clarification_request and clarification_request.get("question"):
+                stored_answer = f"{clarifying_answer}\n\nAntes de continuar: {clarification_request['question']}"
+            postgres_manager.append_chat_exchange(
+                chat_id=current_chat_id,
+                question=normalized_query,
+                answer=stored_answer,
+                provider_used=provider_used,
+                sources=[],
+                active_document_id=active_document_id,
+                assistant_metadata={
+                    "answer_mode": "clarifying",
+                    "clarifying_questions": classification.clarifying_questions,
+                    "clarification_request": clarification_request,
+                },
+            )
+            postgres_manager.save_query(question=normalized_query, answer=stored_answer)
             return ChatResponse(
                 answer=clarifying_answer,
                 sources=[],
@@ -1664,6 +1823,7 @@ class RAGPipeline:
                 answer_mode="clarifying",
                 classification=classification.model_dump(),
                 clarifying_questions=classification.clarifying_questions,
+                clarification_request=clarification_request,
             )
 
         if (
@@ -1750,7 +1910,7 @@ class RAGPipeline:
                         conversation_diploma_slug=_conv_diploma_slug,
                         conversation_diploma_names=_conv_diploma_names if _conv_diploma_names else None,
                     )
-                    for qv in expanded_queries[:1]
+                    for qv in expanded_queries[:2]
                 ]
             )
             all_evidences: list = []
@@ -2436,6 +2596,7 @@ class RAGPipeline:
         chat_id: str | None = None,
         user_id: str | None = None,
         query_context: str | None = None,
+        clarification_context: dict | None = None,
     ) -> dict:
         """Lightweight classification only — no retrieval, no LLM generation.
 
@@ -2444,10 +2605,11 @@ class RAGPipeline:
         before committing to a full RAG pipeline call.
         """
         normalized_query = query.strip()
+        analysis_query = _clarification_enriched_query(normalized_query, clarification_context)
         effective_query = (
-            f"{normalized_query}\n\n{query_context.strip()}"
+            f"{analysis_query}\n\n{query_context.strip()}"
             if query_context and query_context.strip()
-            else normalized_query
+            else analysis_query
         )
         history = conversation_history or []
         chat_state = (
@@ -2469,6 +2631,7 @@ class RAGPipeline:
         classification = _apply_deterministic_context_override(
             effective_query, classification
         )
+        _apply_progressive_clarification(classification, clarification_context)
 
         if (
             not classification.needs_clarification
@@ -2492,9 +2655,23 @@ class RAGPipeline:
                 normalized_query, classification, history, chat_state
             )
 
+        if classification.needs_clarification:
+            _ensure_clarification_prompts(normalized_query, classification, history, chat_state)
+            if _clarification_repeats_previous(classification, clarification_context):
+                classification.needs_clarification = False
+                classification.clarifying_questions = []
+                classification.clarification_prompts = []
+
+        clarification_request = (
+            classification.clarification_prompts[0].model_dump()
+            if classification.needs_clarification and classification.clarification_prompts
+            else None
+        )
+
         return {
             "needs_clarification": classification.needs_clarification,
             "clarifying_questions": classification.clarifying_questions or [],
+            "clarification_request": clarification_request,
             "clarifying_message": _clarifying_message(
                 normalized_query, history, classification
             )
@@ -2513,6 +2690,7 @@ class RAGPipeline:
         active_document_id: str | None = None,
         user_id: str | None = None,
         query_context: str | None = None,
+        clarification_context: dict | None = None,
     ):
         """Stream-safe wrapper: checks for vague queries BEFORE retrieval/LLM."""
         import json as _json
@@ -2532,17 +2710,46 @@ class RAGPipeline:
         )
 
         preflight = await self.preflight_classify(
-            query, provider, conversation_history, chat_id, user_id, query_context
+            query, provider, conversation_history, chat_id, user_id, query_context, clarification_context
         )
         if preflight.get("needs_clarification") and not active_document_id:
             log.info("query is vague, returning clarifying mode: %s", query[:80])
+            current_chat_id = chat_id
+            if not current_chat_id:
+                current_chat_id = postgres_manager.create_chat(
+                    title=query.strip(), active_document_id=active_document_id, user_id=user_id
+                )
+            clarification_request = preflight.get("clarification_request") or {}
+            clarification_request["original_question"] = (
+                str((clarification_context or {}).get("original_question") or "").strip()
+                or query.strip()
+            )
+            answer = preflight.get("clarifying_message", "")
+            stored_answer = answer
+            if clarification_request.get("question"):
+                stored_answer = f"{answer}\n\nAntes de continuar: {clarification_request['question']}"
+            postgres_manager.append_chat_exchange(
+                chat_id=current_chat_id,
+                question=query.strip(),
+                answer=stored_answer,
+                provider_used=provider or get_settings().default_llm_provider,
+                sources=[],
+                active_document_id=active_document_id,
+                assistant_metadata={
+                    "answer_mode": "clarifying",
+                    "clarifying_questions": preflight["clarifying_questions"],
+                    "clarification_request": clarification_request,
+                },
+            )
             yield (
                 "data: "
                 + _json.dumps(
                     {
                         "answer_mode": "clarifying",
                         "clarifying_questions": preflight["clarifying_questions"],
-                        "answer": preflight.get("clarifying_message", ""),
+                        "clarification_request": clarification_request,
+                        "answer": answer,
+                        "chat_id": current_chat_id,
                         "done": True,
                     }
                 )
@@ -2558,6 +2765,7 @@ class RAGPipeline:
             active_document_id=active_document_id,
             user_id=user_id,
             query_context=query_context,
+            clarification_context=clarification_context,
         ):
             yield chunk
 
@@ -2570,6 +2778,7 @@ class RAGPipeline:
         active_document_id: str | None = None,
         user_id: str | int | None = None,
         query_context: str | None = None,
+        clarification_context: dict | None = None,
     ):
         """Stream answer tokens via SSE, then yields a final `done: true` event.
 
@@ -2580,10 +2789,11 @@ class RAGPipeline:
         import json as _json
 
         normalized_query = (query or "").strip()
+        analysis_query = _clarification_enriched_query(normalized_query, clarification_context)
         effective_query = (
-            f"{normalized_query}\n\n{query_context.strip()}"
+            f"{analysis_query}\n\n{query_context.strip()}"
             if query_context and query_context.strip()
-            else normalized_query
+            else analysis_query
         )
         history = conversation_history or []
         current_chat_id = chat_id
@@ -2626,6 +2836,7 @@ class RAGPipeline:
         classification = _apply_deterministic_context_override(
             effective_query, classification
         )
+        _apply_progressive_clarification(classification, clarification_context)
         # Augment conversation context with classification's diploma detection
         if classification.requested_diplomas:
             _conv_diploma_names.extend(classification.requested_diplomas)
@@ -2638,7 +2849,9 @@ class RAGPipeline:
         # Clarification gate — skip when user has an active document loaded
         if active_document_id:
             classification.needs_clarification = False
-        if (
+            classification.clarifying_questions = []
+            classification.clarification_prompts = []
+        elif (
             not classification.needs_clarification
             and not classification.clarifying_questions
         ):
@@ -2660,6 +2873,13 @@ class RAGPipeline:
                 normalized_query, classification, history, chat_state
             )
 
+        if classification.needs_clarification:
+            _ensure_clarification_prompts(normalized_query, classification, history, chat_state)
+            if _clarification_repeats_previous(classification, clarification_context):
+                classification.needs_clarification = False
+                classification.clarifying_questions = []
+                classification.clarification_prompts = []
+
         if classification.needs_clarification and classification.clarifying_questions:
             clarifying_answer = _clarifying_message(
                 normalized_query, history, classification
@@ -2679,6 +2899,10 @@ class RAGPipeline:
                     {
                         "answer_mode": "clarifying",
                         "clarifying_questions": classification.clarifying_questions,
+                        "clarification_request": (
+                            classification.clarification_prompts[0].model_dump()
+                            if classification.clarification_prompts else None
+                        ),
                         "answer": clarifying_answer,
                         "done": True,
                     }
@@ -2798,18 +3022,16 @@ class RAGPipeline:
             retrieval = self._force_requested_article_evidence(retrieval, classification)
         _t_retrieval_done = _time.perf_counter()
 
+        yield (
+            "data: "
+            + _json.dumps({
+                "phase": "evaluating",
+                "status": "A avaliar a relevância e a autoridade das fontes encontradas.",
+            })
+            + "\n\n"
+        )
+
         # Safety net — force user doc chunks into context when a document is active
-        try:
-            with open("/tmp/pipeline_debug.log", "a") as f:
-                f.write(
-                    f"[safety_net] active_doc={'YES' if active_document_id else 'NO'} user_ev_count={len(retrieval.user_evidence)} official_ev_count={len(retrieval.official_evidence)} chunks_count={len(retrieval.retrieved_chunks)}\n"
-                )
-                for ue in retrieval.user_evidence[:3]:
-                    f.write(
-                        f"  ue: bucket={ue.source_bucket} title={ue.chunk.title} src={ue.chunk.source_scope} score={ue.score:.1f}\n"
-                    )
-        except Exception:
-            pass
         if active_document_id and not retrieval.user_evidence:
             logger.info(
                 "User document not found in retrieval — force-fetching chunks for %s",
@@ -2956,6 +3178,14 @@ class RAGPipeline:
         _t_llm_done = _time.perf_counter()
 
         # --- Phase 4: validate, compose, persist ---
+        yield (
+            "data: "
+            + _json.dumps({
+                "phase": "verifying",
+                "status": "A verificar os artigos citados e a consistência da resposta.",
+            })
+            + "\n\n"
+        )
         _t_post_start = _time.perf_counter()
         answer_draft = legal_composer.parse_llm_json(raw_answer)
         answer_draft = legal_composer.constrain_draft_to_context(
@@ -2981,8 +3211,40 @@ class RAGPipeline:
                     "sufficient_legal_support": False,
                 }
             )
+        verified_articles = []
+        to_verify = [
+            (item.article or "", self._basis_slug_from_retrieval(item, retrieval), item.page)
+            for item in validation.confirmed_legal_basis + validation.prudential_legal_basis
+            if item.article and self._basis_slug_from_retrieval(item, retrieval)
+        ]
+        if to_verify:
+            try:
+                verified_articles = await asyncio.wait_for(
+                    article_verifier.verify_batch(to_verify), timeout=1.5
+                )
+            except asyncio.TimeoutError:
+                logger.info("Article verification timed out in stream finalization")
+            unverified = [
+                item for item in verified_articles
+                if item.status not in {"confirmed", "confirmed_in_text"}
+            ]
+            if unverified:
+                validation.issues.append(ValidationIssue(
+                    code="unverified_article",
+                    message=f"{len(unverified)} artigo(s) citados não foram confirmados no corpus indexado.",
+                    severity="high",
+                ))
+                validation = validation.model_copy(update={
+                    "answer_mode": "limited",
+                    "sufficient_legal_support": False,
+                    "issues": validation.issues,
+                })
+                answer_draft = legal_composer.fallback_from_validation(
+                    validation, original_draft=answer_draft
+                )
+
         confidence = legal_confidence_service.score(
-            classification, retrieval, validation, []
+            classification, retrieval, validation, verified_articles
         )
         sources = self._select_sources(retrieval, validation)
         if (
@@ -3049,6 +3311,7 @@ class RAGPipeline:
             provider_used=provider_used or "deepseek",
             sources=[s.model_dump() for s in sources],
             active_document_id=active_document_id,
+            assistant_metadata={"answer_mode": validation.answer_mode},
         )
         postgres_manager.save_query(question=normalized_query, answer=answer)
 
@@ -3127,6 +3390,7 @@ class RAGPipeline:
                         for item in validation.confirmed_legal_basis
                         + validation.prudential_legal_basis
                     ],
+                    "verified_articles": [asdict(item) for item in verified_articles],
                     "timing": {
                         "classify": round(t_classify, 2),
                         "retrieve": round(t_retrieval, 2),

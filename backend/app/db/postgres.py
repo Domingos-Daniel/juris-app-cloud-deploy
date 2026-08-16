@@ -247,9 +247,13 @@ class PostgresManager:
                         content TEXT NOT NULL,
                         provider_used TEXT,
                         created_at TIMESTAMPTZ NOT NULL,
-                        sources_json JSONB NOT NULL DEFAULT '[]'::jsonb
+                        sources_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
                     )
                     """
+                )
+                cur.execute(
+                    "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb"
                 )
                 cur.execute(
                     """
@@ -944,6 +948,7 @@ class PostgresManager:
         provider_used: str,
         sources: list[dict],
         active_document_id: str | None = None,
+        assistant_metadata: dict[str, Any] | None = None,
     ) -> None:
         self.initialize()
         now_user = utc_now_iso()
@@ -960,15 +965,15 @@ class PostgresManager:
             )
             cur.execute(
                 """
-                INSERT INTO chat_messages (id, chat_id, role, content, provider_used, created_at, sources_json)
-                VALUES (%s, %s, 'user', %s, NULL, %s, '[]'::jsonb)
+                INSERT INTO chat_messages (id, chat_id, role, content, provider_used, created_at, sources_json, metadata_json)
+                VALUES (%s, %s, 'user', %s, NULL, %s, '[]'::jsonb, '{}'::jsonb)
                 """,
                 (str(uuid.uuid4()), chat_id, question, now_user),
             )
             cur.execute(
                 """
-                INSERT INTO chat_messages (id, chat_id, role, content, provider_used, created_at, sources_json)
-                VALUES (%s, %s, 'assistant', %s, %s, %s, %s::jsonb)
+                INSERT INTO chat_messages (id, chat_id, role, content, provider_used, created_at, sources_json, metadata_json)
+                VALUES (%s, %s, 'assistant', %s, %s, %s, %s::jsonb, %s::jsonb)
                 """,
                 (
                     str(uuid.uuid4()),
@@ -977,6 +982,7 @@ class PostgresManager:
                     provider_used,
                     now_assistant,
                     json.dumps(sources, ensure_ascii=False),
+                    json.dumps(assistant_metadata or {}, ensure_ascii=False),
                 ),
             )
 
@@ -1073,7 +1079,7 @@ class PostgresManager:
             for chat in chats:
                 cur.execute(
                     """
-                    SELECT id, role, content, provider_used, created_at, sources_json
+                    SELECT id, role, content, provider_used, created_at, sources_json, metadata_json
                     FROM chat_messages
                     WHERE chat_id = %s
                     ORDER BY created_at ASC, CASE WHEN role = 'user' THEN 0 ELSE 1 END, id ASC
@@ -1096,6 +1102,9 @@ class PostgresManager:
                                 "provider_used": message["provider_used"],
                                 "created_at": message["created_at"].isoformat(),
                                 "sources": message["sources_json"] or [],
+                                "answer_mode": (message["metadata_json"] or {}).get("answer_mode"),
+                                "clarifying_questions": (message["metadata_json"] or {}).get("clarifying_questions", []),
+                                "clarification_request": (message["metadata_json"] or {}).get("clarification_request"),
                             }
                             for message in messages
                         ],
@@ -3104,7 +3113,7 @@ class PostgresManager:
 
             cur.execute(
                 """
-                SELECT id, role, content, provider_used, created_at, sources_json
+                SELECT id, role, content, provider_used, created_at, sources_json, metadata_json
                 FROM chat_messages
                 WHERE chat_id = %s
                 ORDER BY created_at ASC, CASE WHEN role = 'user' THEN 0 ELSE 1 END, id ASC
@@ -3145,6 +3154,9 @@ class PostgresManager:
                         "provider_used": message["provider_used"],
                         "created_at": message["created_at"].isoformat() if message["created_at"] else None,
                         "sources": message["sources_json"] or [],
+                        "answer_mode": (message["metadata_json"] or {}).get("answer_mode"),
+                        "clarifying_questions": (message["metadata_json"] or {}).get("clarifying_questions", []),
+                        "clarification_request": (message["metadata_json"] or {}).get("clarification_request"),
                     }
                     for message in messages
                 ],

@@ -8,6 +8,7 @@ from typing import get_args
 from app.services.legal.article_numbers import extract_requested_article_numbers
 from app.services.legal.models import (
     AudienceType,
+    ClarificationPrompt,
     LegalBranch,
     LegalClassification,
     NormTypeNeeded,
@@ -20,6 +21,31 @@ from app.services.legal.prompts import ROUTER_SYSTEM_PROMPT
 from app.services.llm.router import llm_router
 
 logger = logging.getLogger(__name__)
+
+
+def _normalise_clarification_payload(raw_items) -> tuple[list[str], list[ClarificationPrompt]]:
+    questions: list[str] = []
+    prompts: list[ClarificationPrompt] = []
+    if not isinstance(raw_items, list):
+        return questions, prompts
+    for item in raw_items[:2]:
+        if isinstance(item, dict):
+            question = str(item.get("question") or "").strip()
+            options = [
+                str(option).strip()
+                for option in (item.get("options") or [])[:4]
+                if str(option).strip()
+            ]
+        else:
+            question = str(item or "").strip()
+            options = []
+        if not question:
+            continue
+        questions.append(question)
+        prompts.append(ClarificationPrompt(question=question, options=options))
+    return questions, prompts
+
+
 def _robust_json_extract(raw: str) -> dict:
     """Extrai JSON de respostas LLM mesmo com wrap markdown ou texto extra."""
     if not raw:
@@ -122,6 +148,10 @@ def _build_classification(
     if requested_article_numbers and specificity == "geral":
         specificity = "validacao_base_legal"
 
+    clarifying_questions, clarification_prompts = _normalise_clarification_payload(
+        data.get("clarifying_questions", [])
+    )
+
     return LegalClassification(
         query_text=question,
         main_branch=main_branch,
@@ -156,7 +186,8 @@ def _build_classification(
         conversation_topic_hint=topic_route if data.get("is_follow_up") else None,
         conversation_norm_type_hint=None,
         needs_clarification=data.get("needs_clarification", False),
-        clarifying_questions=data.get("clarifying_questions", []),
+        clarifying_questions=clarifying_questions,
+        clarification_prompts=clarification_prompts,
         semantic_confidence=semantic_confidence,
     )
 
@@ -212,8 +243,12 @@ class LegalClassifier:
             '  "is_transformation": false,\n'
             '  "transformation_type": "none",\n'
             '  "needs_clarification": false,\n'
-            '  "clarifying_questions": []\n'
+            '  "clarifying_questions": [{"question": "pergunta curta e específica", "options": ["opção concreta 1", "opção concreta 2", "Não sei informar"]}]\n'
             "}\n\n"
+            "Só marque needs_clarification quando faltar um dado indispensável. "
+            "Nesse caso, devolva no máximo uma pergunta ligada aos factos apresentados, "
+            "com 2-4 respostas concretas. Se a pergunta já puder ser pesquisada com segurança, "
+            "use needs_clarification=false e clarifying_questions=[].\n\n"
             f"Historico:\n{history_text}\n\n"
             f"Pergunta: {question}"
         )

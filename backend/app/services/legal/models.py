@@ -80,6 +80,11 @@ DocumentRole = Literal[
 ]
 
 
+class ClarificationPrompt(BaseModel):
+    question: str
+    options: list[str] = Field(default_factory=list)
+
+
 class LegalClassification(BaseModel):
     query_text: str = ""
     main_branch: LegalBranch
@@ -109,6 +114,7 @@ class LegalClassification(BaseModel):
     conversation_norm_type_hint: NormTypeNeeded | None = None
     needs_clarification: bool = False
     clarifying_questions: list[str] = Field(default_factory=list)
+    clarification_prompts: list[ClarificationPrompt] = Field(default_factory=list)
 
 
 @dataclass(slots=True)

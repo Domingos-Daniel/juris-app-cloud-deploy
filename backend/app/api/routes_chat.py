@@ -352,6 +352,7 @@ async def chat(
             active_document_id=payload.active_document_id,
             user_id=current_user["id"],
             query_context=case_query_context,
+            clarification_context=payload.clarification_context,
         )
     except HTTPException:
         raise
@@ -382,6 +383,7 @@ async def chat_stream(
                 active_document_id=payload.active_document_id,
                 user_id=current_user["id"],
                 query_context=case_query_context,
+                clarification_context=payload.clarification_context,
             ),
             media_type="text/event-stream",
             headers={
@@ -416,6 +418,7 @@ async def chat_preflight(
             chat_id=payload.chat_id,
             user_id=current_user["id"],
             query_context=_case_context_text(payload.chat_id, current_user["id"]),
+            clarification_context=payload.clarification_context,
         )
         return JSONResponse(content=result)
     except HTTPException:

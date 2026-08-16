@@ -24,6 +24,10 @@ class ChatRequest(BaseModel):
     active_document_id: str | None = Field(
         default=None, description="Documento PDF ativo para contexto prioritario"
     )
+    clarification_context: dict[str, str] | None = Field(
+        default=None,
+        description="Pergunta original, pergunta de esclarecimento e resposta escolhida",
+    )
 
 
 class SourceItem(BaseModel):
@@ -55,6 +59,7 @@ class ChatResponse(BaseModel):
     legal_basis: list[dict[str, Any]] = Field(default_factory=list)
     validation_issues: list[dict[str, Any]] = Field(default_factory=list)
     clarifying_questions: list[str] = Field(default_factory=list)
+    clarification_request: dict[str, Any] | None = None
     verified_articles: list[dict[str, Any]] = Field(default_factory=list)
     suggested_actions: list[dict[str, str]] = Field(default_factory=list)
 
@@ -120,6 +125,9 @@ class ChatMessageItem(BaseModel):
     provider_used: str | None = None
     created_at: str
     sources: list[SourceItem] = Field(default_factory=list)
+    answer_mode: str | None = None
+    clarifying_questions: list[str] = Field(default_factory=list)
+    clarification_request: dict[str, Any] | None = None
 
 
 class ChatListItem(BaseModel):
