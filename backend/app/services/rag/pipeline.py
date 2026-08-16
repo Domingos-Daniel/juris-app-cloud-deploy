@@ -1705,13 +1705,13 @@ class RAGPipeline:
                 all_user_evidences.extend(direct_current.user_evidence)
 
             if all_evidences:
-                all_evidences = self._with_jurisprudence_priority(
-                    all_evidences, MAX_OFFICIAL_EVIDENCES, classification.main_branch
+                all_evidences = self._with_branch_coverage(
+                    all_evidences, MAX_OFFICIAL_EVIDENCES, classification
                 )
-            combined_evidences = self._with_jurisprudence_priority(
+            combined_evidences = self._with_branch_coverage(
                 all_evidences + all_user_evidences,
                 MAX_COMBINED_EVIDENCES,
-                classification.main_branch,
+                classification,
             )
             if combined_evidences:
                 retrieval = RetrievalResult(
@@ -2791,13 +2791,13 @@ class RAGPipeline:
                 all_evidences.extend(direct_current.official_evidence)
                 all_user_evidences.extend(direct_current.user_evidence)
             if all_evidences:
-                all_evidences = self._with_jurisprudence_priority(
-                    all_evidences, MAX_OFFICIAL_EVIDENCES, classification.main_branch
+                all_evidences = self._with_branch_coverage(
+                    all_evidences, MAX_OFFICIAL_EVIDENCES, classification
                 )
-            combined_evidences = self._with_jurisprudence_priority(
+            combined_evidences = self._with_branch_coverage(
                 all_evidences + all_user_evidences,
                 MAX_COMBINED_EVIDENCES,
-                classification.main_branch,
+                classification,
             )
             if combined_evidences:
                 retrieval = RetrievalResult(
@@ -3579,6 +3579,49 @@ class RAGPipeline:
             )
             if len(selected) >= source_limit:
                 break
+        return selected
+
+    @staticmethod
+    def _with_branch_coverage(evidences: list, limit: int, classification) -> list:
+        branches = [
+            branch
+            for branch in getattr(classification, "branch_candidates", [])
+            if branch not in {"misto", "indeterminado"}
+        ]
+        if len(branches) <= 1:
+            return RAGPipeline._with_jurisprudence_priority(
+                evidences, limit, getattr(classification, "main_branch", None)
+            )
+
+        ordered = sorted(evidences, key=lambda evidence: evidence.score, reverse=True)
+        selected: list = []
+        seen: set[tuple] = set()
+
+        def add(evidence) -> None:
+            chunk = evidence.chunk
+            key = (
+                chunk.document_id,
+                chunk.title,
+                chunk.page,
+                chunk.article_number,
+                (chunk.metadata or {}).get("document_kind"),
+            )
+            if key in seen or len(selected) >= limit:
+                return
+            seen.add(key)
+            selected.append(evidence)
+
+        quota = max(2, limit // len(branches))
+        for branch in branches:
+            branch_items = [
+                evidence
+                for evidence in ordered
+                if (evidence.chunk.metadata or {}).get("legal_branch") == branch
+            ]
+            for evidence in branch_items[:quota]:
+                add(evidence)
+        for evidence in ordered:
+            add(evidence)
         return selected
 
     @staticmethod

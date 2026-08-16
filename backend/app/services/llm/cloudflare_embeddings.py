@@ -40,6 +40,10 @@ class CloudflareEmbeddingClient:
         )
         logger.warning("Cloudflare embeddings disabled temporarily: %s", reason)
 
+    @staticmethod
+    def _should_split_batch(status_code: int, batch_size: int) -> bool:
+        return status_code in {400, 413} and batch_size > 1
+
     def _request_embeddings(self, texts: list[str]) -> list[list[float]]:
         model = self.settings.cloudflare_embedding_model.strip() or "@cf/baai/bge-m3"
         account_id = self.settings.cloudflare_account_id.strip()
@@ -62,7 +66,7 @@ class CloudflareEmbeddingClient:
                 timeout=self.settings.cloudflare_embedding_timeout_seconds,
             )
         except urllib.error.HTTPError as exc:
-            if exc.code == 400 and len(texts) > 1:
+            if self._should_split_batch(exc.code, len(texts)):
                 midpoint = max(1, len(texts) // 2)
                 return self._request_embeddings(texts[:midpoint]) + self._request_embeddings(
                     texts[midpoint:]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from app.db.models import RetrievedChunk
 from app.db.postgres import postgres_manager
 from app.services.rag.embeddings import embedding_service
@@ -14,7 +16,21 @@ class LegislationVectorStore:
         if not items:
             return 0
         texts = [item["text"] for item in items]
-        embeddings = await embedding_service.embed_texts(texts)
+        if embedding_service.settings.embedding_model_type == "cloudflare":
+            groups = [texts[index : index + 24] for index in range(0, len(texts), 24)]
+            embeddings = []
+            for index in range(0, len(groups), 4):
+                batch_results = await asyncio.gather(
+                    *[
+                        embedding_service.embed_texts_for_ingestion(group)
+                        for group in groups[index : index + 4]
+                    ]
+                )
+                embeddings.extend(
+                    vector for batch in batch_results for vector in batch
+                )
+        else:
+            embeddings = await embedding_service.embed_texts(texts)
         enriched = []
         for item, vector in zip(items, embeddings):
             metadata = {
