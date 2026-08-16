@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -15,6 +16,7 @@ class EmbeddingService:
         self.settings = get_settings()
         self._local_model = None
         self._is_e5 = False
+        self._runtime_error: RuntimeError | None = None
 
     def _model_cache_version_ok(self, cache_dir: Path) -> bool:
         try:
@@ -117,6 +119,31 @@ class EmbeddingService:
             _ = self.local_model
 
     @property
+    def provider(self) -> str:
+        return self.settings.embedding_model_type.strip().lower()
+
+    @property
+    def model_name(self) -> str:
+        if self.provider == "local":
+            return self.settings.local_embedding_model.strip()
+        if self.provider == "cloudflare":
+            return self.settings.cloudflare_embedding_model.strip()
+        return self.settings.openai_embedding_model.strip()
+
+    @property
+    def model_version(self) -> str:
+        identity = f"{self.provider}:{self.model_name}"
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+
+    def vector_metadata(self, vector: list[float] | None = None) -> dict[str, str | int]:
+        return {
+            "embedding_provider": self.provider,
+            "embedding_model": self.model_name,
+            "embedding_version": self.model_version,
+            "embedding_dimension": len(vector or []),
+        }
+
+    @property
     def query_prefix(self) -> str:
         return "query: " if self._is_e5 else ""
 
@@ -135,8 +162,16 @@ class EmbeddingService:
         raise RuntimeError(f"EMBEDDING_MODEL_TYPE invalido: {self.settings.embedding_model_type}")
 
     def _embed_local(self, texts: list[str]) -> list[list[float]]:
-        embeddings = self.local_model.encode(texts, normalize_embeddings=True)
-        return embeddings.tolist()
+        if self._runtime_error is not None:
+            raise self._runtime_error
+        try:
+            embeddings = self.local_model.encode(texts, normalize_embeddings=True)
+            return embeddings.tolist()
+        except Exception as exc:
+            self._runtime_error = RuntimeError(
+                f"Modelo local de embeddings indisponível nesta execução: {exc}"
+            )
+            raise self._runtime_error from exc
 
     async def embed_query(self, text: str) -> list[float]:
         if self.settings.embedding_model_type == "local":

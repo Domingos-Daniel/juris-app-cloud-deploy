@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import uuid
 from contextlib import contextmanager
@@ -113,11 +115,18 @@ def _vector_literal(values: list[float] | None) -> str | None:
     return "{" + ",".join(f"{float(value):.12g}" for value in values) + "}"
 
 
+def _pgvector_literal(values: list[float] | None) -> str | None:
+    if not values:
+        return None
+    return "[" + ",".join(f"{float(value):.12g}" for value in values) + "]"
+
+
 class PostgresManager:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._initialized = False
         self._pool: ConnectionPool | None = None
+        self._pgvector_available = False
 
     def _require_dsn(self) -> str:
         dsn = (self.settings.postgres_dsn or "").strip()
@@ -358,11 +367,37 @@ class PostgresManager:
                         metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                         text_search TSVECTOR,
                         embedding double precision[],
+                        embedding_provider TEXT,
+                        embedding_model TEXT,
+                        embedding_version TEXT,
+                        embedding_dimension INTEGER,
+                        content_hash TEXT,
                         created_at TIMESTAMPTZ NOT NULL,
                         updated_at TIMESTAMPTZ NOT NULL
                     )
                     """
                 )
+                if self.settings.pgvector_enabled:
+                    cur.execute("SAVEPOINT pgvector_setup")
+                    try:
+                        cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                        cur.execute(
+                            "ALTER TABLE legal_segments ADD COLUMN IF NOT EXISTS embedding_vector vector"
+                        )
+                        cur.execute("RELEASE SAVEPOINT pgvector_setup")
+                        self._pgvector_available = True
+                    except Exception as exc:
+                        cur.execute("ROLLBACK TO SAVEPOINT pgvector_setup")
+                        cur.execute("RELEASE SAVEPOINT pgvector_setup")
+                        logger.warning("pgvector indisponível; usando fallback array: %s", exc)
+                for statement in (
+                    "ALTER TABLE legal_segments ADD COLUMN IF NOT EXISTS embedding_provider TEXT",
+                    "ALTER TABLE legal_segments ADD COLUMN IF NOT EXISTS embedding_model TEXT",
+                    "ALTER TABLE legal_segments ADD COLUMN IF NOT EXISTS embedding_version TEXT",
+                    "ALTER TABLE legal_segments ADD COLUMN IF NOT EXISTS embedding_dimension INTEGER",
+                    "ALTER TABLE legal_segments ADD COLUMN IF NOT EXISTS content_hash TEXT",
+                ):
+                    cur.execute(statement)
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_document_pages_doc ON document_pages(document_id, page_number)"
                 )
@@ -663,6 +698,9 @@ class PostgresManager:
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_legal_segments_doc ON legal_segments(document_id, source_scope)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_legal_segments_embedding_identity ON legal_segments(embedding_provider, embedding_model, embedding_dimension)"
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_jurisprudence_cases_branch ON jurisprudence_cases(court, legal_branch, publication_date DESC)"
@@ -1579,19 +1617,21 @@ class PostgresManager:
                 metadata = item["metadata"]
                 refs = metadata.get("article_references") or []
                 vector = _vector_literal(item.get("embedding"))
+                pgvector = _pgvector_literal(item.get("embedding"))
+                content_hash = hashlib.sha256(item["text"].encode("utf-8")).hexdigest()
                 cur.execute(
                     """
                     INSERT INTO legal_segments (
                         id, legal_document_id, source, title, link_original, page, article_number,
                         article_main, article_references, law_status, source_scope, document_id,
                         diploma_slug, legal_branch, topic_route, text_content, metadata,
-                        text_search, embedding, created_at, updated_at
+                        text_search, embedding, embedding_provider, embedding_model,
+                        embedding_version, embedding_dimension, content_hash, created_at, updated_at
                     )
                     VALUES (
                         %s, NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s::jsonb, to_tsvector('portuguese', %s),
-                        %s::double precision[],
-                        %s, %s
+                        %s::double precision[], %s, %s, %s, %s, %s, %s, %s
                     )
                     ON CONFLICT (id) DO UPDATE
                     SET source = EXCLUDED.source,
@@ -1611,6 +1651,11 @@ class PostgresManager:
                         metadata = EXCLUDED.metadata,
                         text_search = EXCLUDED.text_search,
                         embedding = EXCLUDED.embedding,
+                        embedding_provider = EXCLUDED.embedding_provider,
+                        embedding_model = EXCLUDED.embedding_model,
+                        embedding_version = EXCLUDED.embedding_version,
+                        embedding_dimension = EXCLUDED.embedding_dimension,
+                        content_hash = EXCLUDED.content_hash,
                         updated_at = EXCLUDED.updated_at
                     """,
                     (
@@ -1632,10 +1677,20 @@ class PostgresManager:
                         json.dumps(metadata, ensure_ascii=False),
                         item["text"],
                         vector,
+                        metadata.get("embedding_provider"),
+                        metadata.get("embedding_model"),
+                        metadata.get("embedding_version"),
+                        metadata.get("embedding_dimension") or len(item.get("embedding") or []),
+                        content_hash,
                         now,
                         now,
                     ),
                 )
+                if self._pgvector_available and pgvector:
+                    cur.execute(
+                        "UPDATE legal_segments SET embedding_vector = %s::vector WHERE id = %s",
+                        (pgvector, item["id"]),
+                    )
         return len(items)
 
     def upsert_jurisprudence_cases(self, items: list[dict[str, Any]]) -> int:
@@ -1703,12 +1758,10 @@ class PostgresManager:
     async def query_legal_segments(
         self, query: str, k: int, where: dict[str, Any] | None = None
     ) -> list[RetrievedChunk]:
-        import asyncio as _asyncio
-
         self.initialize()
         from app.services.rag.embeddings import embedding_service
 
-        cache_key = query.strip().casefold()
+        cache_key = f"{embedding_service.model_version}:{query.strip().casefold()}"
         cached_emb = _embedding_cache.get(cache_key)
         if cached_emb is not None:
             query_vec = cached_emb
@@ -1721,75 +1774,152 @@ class PostgresManager:
             except Exception as exc:
                 logger.warning("Embedding query failed; falling back to lexical retrieval: %s", exc)
                 query_vec = None
-        query_dim = len(query_vec) if query_vec else 0
+        lexical_rows, dense_rows = await asyncio.gather(
+            asyncio.to_thread(self._query_legal_segments_lexical, query, k, where),
+            asyncio.to_thread(
+                self._query_legal_segments_dense,
+                query_vec,
+                k,
+                where,
+                embedding_service.provider,
+                embedding_service.model_name,
+            ),
+        )
+        fused = self._reciprocal_rank_fusion(
+            lexical_rows,
+            dense_rows,
+            limit=max(1, k),
+        )
+        return [
+            self._segment_to_chunk(row, distance=row.get("distance")) for row in fused
+        ]
+
+    @staticmethod
+    def _where_sql(where: dict[str, Any] | None) -> tuple[list[str], list[Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        for key, value in (where or {}).items():
+            if key.startswith("metadata__"):
+                clauses.append("metadata ->> %s = %s")
+                params.extend([key.split("__", 1)[1], str(value)])
+            else:
+                clauses.append(f"{key} = %s")
+                params.append(value)
+        return clauses, params
+
+    def _query_legal_segments_lexical(
+        self, query: str, k: int, where: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        clauses, where_params = self._where_sql(where)
+        fts_query = _build_fts_or_query(query)
+        if fts_query:
+            clauses.append("text_search @@ to_tsquery('portuguese', %s)")
+            where_params.append(fts_query)
+        sql = """
+            SELECT id, source, title, link_original, page, article_number, law_status,
+                   source_scope, document_id, metadata, text_content,
+                   ts_rank_cd(text_search, websearch_to_tsquery('portuguese', %s), 32) AS lexical_rank,
+                   NULL::double precision AS distance
+            FROM legal_segments
+        """
+        sql += " WHERE " + (" AND ".join(clauses) if clauses else "TRUE")
+        sql += " ORDER BY lexical_rank DESC, page ASC NULLS LAST LIMIT %s"
+        params = [query, *where_params, max(20, k * 8)]
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            return list(cur.fetchall())
+
+    def _query_legal_segments_dense(
+        self,
+        query_vec: list[float] | None,
+        k: int,
+        where: dict[str, Any] | None,
+        provider: str,
+        model: str,
+    ) -> list[dict[str, Any]]:
+        if not query_vec:
+            return []
+        clauses, params = self._where_sql(where)
+        clauses.extend(
+            [
+                "embedding_provider = %s",
+                "embedding_model = %s",
+                "embedding_dimension = %s",
+            ]
+        )
+        params.extend([provider, model, len(query_vec)])
+        if not self._pgvector_available:
+            return self._query_legal_segments_dense_array(
+                query_vec, k, clauses, params
+            )
+        clauses.append("embedding_vector IS NOT NULL")
+        vector = _pgvector_literal(query_vec)
+        sql = """
+            SELECT id, source, title, link_original, page, article_number, law_status,
+                   source_scope, document_id, metadata, text_content,
+                   0::double precision AS lexical_rank,
+                   embedding_vector <=> %s::vector AS distance
+            FROM legal_segments
+        """
+        sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY embedding_vector <=> %s::vector LIMIT %s"
+        query_params = [vector, *params, vector, max(20, k * 8)]
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, query_params)
+            return list(cur.fetchall())
+
+    def _query_legal_segments_dense_array(
+        self,
+        query_vec: list[float],
+        k: int,
+        clauses: list[str],
+        params: list[Any],
+    ) -> list[dict[str, Any]]:
+        import numpy as np
+
         sql = """
             SELECT id, source, title, link_original, page, article_number, law_status,
                    source_scope, document_id, metadata, text_content, embedding,
-                   COALESCE(ts_rank(text_search, websearch_to_tsquery('portuguese', %s)), 0) AS lexical_rank
+                   0::double precision AS lexical_rank
             FROM legal_segments
         """
-        clauses: list[str] = []
-        params: list[Any] = [query]
+        clauses = [*clauses, "embedding IS NOT NULL"]
+        sql += " WHERE " + " AND ".join(clauses)
+        with self.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = list(cur.fetchall())
+        query_array = np.asarray(query_vec, dtype=np.float32)
+        query_norm = float(np.linalg.norm(query_array))
+        for row in rows:
+            vector = np.asarray(row.pop("embedding"), dtype=np.float32)
+            denominator = query_norm * float(np.linalg.norm(vector))
+            similarity = float(np.dot(query_array, vector)) / denominator if denominator else 0.0
+            row["distance"] = 1.0 - similarity
+        rows.sort(key=lambda row: float(row.get("distance", 1.0)))
+        return rows[: max(20, k * 8)]
 
-        # FTS soft filter: extract OR-terms to narrow scan via GIN index.
-        # Skipped when where already restricts results (document_id, document_kind, etc.)
-        _has_targeted_filter = bool(where) and any(
-            k in ("document_id", "title") or k.startswith("metadata__")
-            for k in (where or {}).keys()
-        )
-        _fts_or_query = None if _has_targeted_filter else _build_fts_or_query(query)
-        if _fts_or_query:
-            clauses.append("text_search @@ to_tsquery('portuguese', %s)")
-            params.append(_fts_or_query)
-
-        lexical_clauses = list(clauses)
-        lexical_params = list(params)
-
-        if query_dim:
-            clauses.append("embedding IS NOT NULL")
-            clauses.append("array_length(embedding, 1) = %s")
-            params.append(query_dim)
-        if where:
-            for key, value in where.items():
-                if key.startswith("metadata__"):
-                    meta_key = key.split("__", 1)[1]
-                    clauses.append("metadata ->> %s = %s")
-                    lexical_clauses.append("metadata ->> %s = %s")
-                    params.extend([meta_key, str(value)])
-                    lexical_params.extend([meta_key, str(value)])
-                else:
-                    clauses.append(f"{key} = %s")
-                    lexical_clauses.append(f"{key} = %s")
-                    params.append(value)
-                    lexical_params.append(value)
-        sql += " WHERE " + (" AND ".join(clauses) if clauses else "TRUE")
-        sql += " ORDER BY lexical_rank DESC LIMIT %s"
-        params.append(max(1, k * 6))
-
-        results = await _asyncio.to_thread(
-            self._query_legal_segments_sync, query_vec, k, sql, params
-        )
-        if results or not query_vec:
-            return results
-
-        fallback_sql = """
-            SELECT id, source, title, link_original, page, article_number, law_status,
-                   source_scope, document_id, metadata, text_content, embedding,
-                   COALESCE(ts_rank(text_search, websearch_to_tsquery('portuguese', %s)), 0) AS lexical_rank
-            FROM legal_segments
-        """
-        fallback_sql += " WHERE " + (
-            " AND ".join(lexical_clauses) if lexical_clauses else "TRUE"
-        )
-        fallback_sql += " ORDER BY lexical_rank DESC LIMIT %s"
-        fallback_params = [*lexical_params, max(1, k * 6)]
-        logger.warning(
-            "Vector retrieval returned no rows for dim=%s; falling back to lexical retrieval",
-            query_dim,
-        )
-        return await _asyncio.to_thread(
-            self._query_legal_segments_sync, None, k, fallback_sql, fallback_params
-        )
+    @staticmethod
+    def _reciprocal_rank_fusion(
+        lexical_rows: list[dict[str, Any]],
+        dense_rows: list[dict[str, Any]],
+        limit: int,
+        rank_constant: int = 60,
+    ) -> list[dict[str, Any]]:
+        scores: dict[str, float] = {}
+        rows: dict[str, dict[str, Any]] = {}
+        for weight, ranked in ((1.15, lexical_rows), (1.0, dense_rows)):
+            for rank, row in enumerate(ranked, start=1):
+                chunk_id = str(row["id"])
+                rows.setdefault(chunk_id, row)
+                scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (
+                    rank_constant + rank
+                )
+                if row.get("distance") is not None:
+                    rows[chunk_id]["distance"] = row["distance"]
+        ordered_ids = sorted(scores, key=scores.get, reverse=True)[:limit]
+        for chunk_id in ordered_ids:
+            rows[chunk_id]["rrf_score"] = scores[chunk_id]
+        return [rows[chunk_id] for chunk_id in ordered_ids]
 
     def _query_legal_segments_sync(
         self,

@@ -14,11 +14,23 @@ services:
       - key: DEFAULT_LLM_PROVIDER
         value: deepseek
       - key: EMBEDDING_MODEL_TYPE
-        value: openai
+        value: cloudflare
+      - key: CLOUDFLARE_EMBEDDING_MODEL
+        value: "@cf/baai/bge-m3"
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_AI_TOKEN
+        sync: false
       - key: POSTGRES_SCHEMA
         value: public
       - key: RETRIEVAL_K
-        value: "8"
+        value: "12"
+      - key: RETRIEVAL_CANDIDATE_K
+        value: "50"
+      - key: RERANKER_ENABLED
+        value: "false"
+      - key: PGVECTOR_ENABLED
+        value: "true"
       - key: MAX_CONTEXT_CHARS
         value: "10000"
       - key: REQUEST_TIMEOUT_SECONDS

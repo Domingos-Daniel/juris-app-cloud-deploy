@@ -13,6 +13,9 @@ from app.services.legal.models import (
     RetrievalEvidence,
     RetrievalResult,
 )
+from app.services.legal.query_planner import legal_query_planner
+from app.services.legal.reranker import llm_reranker
+from app.services.legal.retrieval_quality import retrieval_quality_evaluator
 from app.services.rag.retriever import retriever_service
 from app.services.pdf.document_context import document_context_service
 
@@ -173,129 +176,6 @@ PENAL_GOOD_PATTERNS = (
     "fraude",
     "patrimonial",
 )
-PUBLIC_ASSET_MISUSE_QUERY_MARKERS = (
-    "carro do estado",
-    "viatura do estado",
-    "veiculo do estado",
-    "bem publico",
-    "bens publicos",
-    "patrimonio do estado",
-    "patrimonio publico",
-    "uso privado",
-    "peculato",
-    "peculato de uso",
-)
-PUBLIC_ASSET_MISUSE_AGENT_MARKERS = (
-    "funcionario publico",
-    "funcionário público",
-    "agente publico",
-    "agente público",
-    "servidor publico",
-    "servidor público",
-    "titular de cargo publico",
-    "titular de cargo público",
-)
-PUBLIC_ASSET_MISUSE_COMPANY_MARKERS = (
-    "empresa publica",
-    "empresa pública",
-    "sociedade de capitais publicos",
-    "sociedade de capitais públicos",
-    "sector publico",
-    "setor público",
-)
-PUBLIC_ASSET_MISUSE_STRONG_TERMS = (
-    "peculato de uso",
-    "usar ou deixar usar",
-    "funcionário público",
-    "funcionario publico",
-    "coisa móvel",
-    "coisa movel",
-    "virtude do seu cargo",
-    "virtude das suas funções",
-    "virtude das suas funcoes",
-)
-PUBLIC_ASSET_MISUSE_SECONDARY_TERMS = (
-    "peculato",
-    "abuso de poder",
-    "benefício ilegítimo",
-    "beneficio ilegitimo",
-    "património do estado",
-    "patrimonio do estado",
-    "bem público",
-    "bem publico",
-)
-PUBLIC_ASSET_MISUSE_ARTICLE_BOOSTS = {
-    "363": 7.0,
-    "362": 5.0,
-    "374": 3.0,
-    "406": -4.5,
-}
-JOURNALIST_LEAK_MEDIA_MARKERS = (
-    "jornalista",
-    "imprensa",
-    "noticia",
-    "notícia",
-    "comunicacao social",
-    "comunicação social",
-    "publicacao",
-    "publicação",
-    "denuncia",
-    "denúncia",
-)
-JOURNALIST_LEAK_CONTEXT_MARKERS = (
-    "corrupcao",
-    "corrupção",
-    "funcionario publico",
-    "funcionário público",
-    "funcionarios publicos",
-    "funcionários públicos",
-    "documento vazado",
-    "documentos vazados",
-    "vazamento",
-    "fonte",
-    "segredo",
-    "dados pessoais",
-    "protecção de dados",
-    "proteccao de dados",
-    "proteção de dados",
-    "protecao de dados",
-)
-JOURNALIST_LEAK_SOURCE_ORDER = (
-    ("codigo-penal-lei-38-20", "359"),
-    ("codigo-penal-lei-38-20", "358"),
-    ("codigo-penal-lei-38-20", "357"),
-    ("codigo-penal-lei-38-20", "362"),
-    ("codigo-penal-lei-38-20", "364"),
-    ("constituicao-republica-angola-2022", "40"),
-    ("constituicao-republica-angola-2022", "44"),
-    ("constituicao-republica-angola-2022", "32"),
-    ("constituicao-republica-angola-2022", "69"),
-    ("constituicao-republica-angola-2022", "57"),
-    ("codigo-penal-lei-38-20", "375"),
-    ("codigo-penal-lei-38-20", "356"),
-)
-STATE_AGENT_LIABILITY_MARKERS = (
-    "responsabilidade civil do estado",
-    "agente do estado",
-    "agente público",
-    "agente publico",
-    "funcionário público",
-    "funcionario publico",
-    "órgão do estado",
-    "orgao do estado",
-)
-STATE_AGENT_DAMAGE_MARKERS = (
-    "dano",
-    "danos",
-    "prejuízo",
-    "prejuizo",
-    "indemnização",
-    "indemnizacao",
-    "exercício das funções",
-    "exercicio das funcoes",
-    "direito de regresso",
-    "regresso",
-)
 LABOR_GOOD_PATTERNS = (
     "despedimento",
     "ilicitude",
@@ -364,131 +244,13 @@ BRANCH_BAD_PATTERNS = {
 }
 
 
-def _is_public_asset_misuse_query(text: str) -> bool:
-    normalized = _normalize(text)
-    if not normalized:
-        return False
-    has_agent = any(marker in normalized for marker in PUBLIC_ASSET_MISUSE_AGENT_MARKERS)
-    has_asset = any(marker in normalized for marker in PUBLIC_ASSET_MISUSE_QUERY_MARKERS)
-    return has_asset or (
-        has_agent and any(token in normalized for token in ("estado", "publico", "público"))
-    )
-
-
-def _is_journalist_leak_public_interest_query(text: str) -> bool:
-    normalized = _normalize(text)
-    if not normalized:
-        return False
-    has_media = any(marker in normalized for marker in JOURNALIST_LEAK_MEDIA_MARKERS)
-    has_context = any(marker in normalized for marker in JOURNALIST_LEAK_CONTEXT_MARKERS)
-    asks_multi_branch = (
-        "penal" in normalized
-        and "constitucional" in normalized
-        and "administrativ" in normalized
-        and "dados" in normalized
-    )
-    return (has_media and has_context) or asks_multi_branch
-
-
-def _is_journalist_direct_evidence(item: RetrievalEvidence) -> bool:
-    return item.retrieval_reason == "journalist_public_interest_direct_article"
-
-
-def _is_labor_objective_direct_evidence(item: RetrievalEvidence) -> bool:
-    return item.retrieval_reason == LABOR_OBJECTIVE_DISMISSAL_REASON
-
-
-def _is_relationship_property_theft_direct_evidence(item: RetrievalEvidence) -> bool:
-    return item.retrieval_reason == RELATIONSHIP_PROPERTY_THEFT_REASON
-
-
-def _is_police_detention_direct_evidence(item: RetrievalEvidence) -> bool:
-    return item.retrieval_reason == POLICE_DETENTION_REASON
-
-
 def _is_curated_direct_evidence(item: RetrievalEvidence) -> bool:
     return item.retrieval_reason in {
-        "journalist_public_interest_direct_article",
-        LABOR_OBJECTIVE_DISMISSAL_REASON,
-        PUBLIC_ASSET_REASON,
-        RELATIONSHIP_PROPERTY_THEFT_REASON,
-        POLICE_DETENTION_REASON,
-        STATE_AGENT_LIABILITY_REASON,
-        CIVIL_LOAN_REASON,
-        ADMIN_ACT_REASON,
+        "requested_article_direct",
+        "dynamic_cross_reference",
+        "legal_concept_rescue",
+        "corrective_retrieval",
     }
-
-
-def _is_civil_loan_query(question: str, classification: LegalClassification) -> bool:
-    normalized = _normalize(question)
-    if not normalized:
-        return False
-    if classification.main_branch != "civil" and "civil" not in (
-        classification.branch_candidates or []
-    ):
-        return False
-    return any(
-        marker in normalized
-        for marker in (
-            "emprestei",
-            "emprestimo",
-            "empréstimo",
-            "mutuo",
-            "mútuo",
-            "divida",
-            "dívida",
-            "devedor",
-            "credor",
-            "transferencia",
-            "transferência",
-            "whatsapp",
-            "mensagem",
-            "contrato escrito",
-            "contrato verbal",
-            "prova",
-            "comprovativo",
-        )
-    )
-
-
-def _is_admin_act_challenge_query(
-    question: str, classification: LegalClassification
-) -> bool:
-    normalized = _normalize(question)
-    if not normalized:
-        return False
-    if classification.main_branch != "administrativo" and "administrativo" not in (
-        classification.branch_candidates or []
-    ):
-        return False
-    return any(
-        marker in normalized
-        for marker in (
-            "acto administrativo",
-            "ato administrativo",
-            "decisao administrativa",
-            "decisão administrativa",
-            "orgao publico",
-            "órgão público",
-            "reclamacao",
-            "reclamação",
-            "recurso hierarquico",
-            "recurso hierárquico",
-            "impugnacao contenciosa",
-            "impugnação contenciosa",
-            "recurso contencioso",
-            "contencioso administrativo",
-        )
-    )
-
-
-def _is_state_agent_liability_query(text: str) -> bool:
-    normalized = _normalize(text)
-    if not normalized:
-        return False
-    has_state_agent = any(marker in normalized for marker in STATE_AGENT_LIABILITY_MARKERS)
-    has_damage = any(marker in normalized for marker in STATE_AGENT_DAMAGE_MARKERS)
-    return has_state_agent and has_damage
 
 
 PENAL_MATERIAL_REQUIRED = (
@@ -565,353 +327,6 @@ MIXED_EMPLOYMENT_TERMS = ("empregador", "trabalhador", "despedimento")
 MIXED_PENAL_TRIGGER_TERMS = (
     MIXED_PAYMENT_TERMS + MIXED_EMPLOYMENT_TERMS + PENAL_QUERY_MARKERS
 )
-PENAL_MATERIAL_POSITIVE = (
-    "infidelidade",
-    "burla",
-    "vantagem patrimonial",
-    "apropriação",
-    "apropriacao",
-    "retenção",
-    "retencao",
-)
-PENAL_MATERIAL_NEGATIVE = (
-    "pena de multa",
-    "pagamento diferido",
-    "indemnização do lesado",
-    "responsabilidade civil emergente de crime",
-)
-PENAL_MATERIAL_ARTICLES = {"426", "417", "468", "406", "399"}
-PENAL_MATERIAL_MIN_SCORE = 3.0
-PENAL_BRANCH_MIN_COUNT = 1
-PENAL_BRANCH_QUERY_LIMIT = 2
-PENAL_MATERIAL_REASON = "penal_material"
-PENAL_MATERIAL_LABEL = "Fundamento penal material prioritário"
-PENAL_MATERIAL_DIPLOMA = "Código Penal"
-PENAL_MATERIAL_SLUG = "codigo-penal-lei-38-20"
-PENAL_MATERIAL_QUESTION_HINTS = (
-    "relevância penal",
-    "relevancia penal",
-    "crime",
-    "penal",
-)
-PENAL_MATERIAL_FOLLOWUP_HINTS = (
-    "mesmo caso",
-    "isso",
-    "agora",
-    "diferença",
-    "diferenca",
-    "melhor",
-)
-PENAL_MATERIAL_LABOR_CONTEXT = (
-    "não pagamento",
-    "nao pagamento",
-    "despedimento",
-    "indemnização",
-    "indemnizacao",
-)
-PENAL_MATERIAL_PRIORITY_BOOST = 4.4
-PENAL_MATERIAL_FILTER_FLOOR = 1.6
-PENAL_MATERIAL_SELECTION_LIMIT = 2
-PENAL_MATERIAL_BRANCH_LIMIT = 2
-PENAL_MATERIAL_PROMOTION_BONUS = 2.8
-PENAL_MATERIAL_FORCE_INCLUDE = True
-PENAL_MATERIAL_CONCRETE_TERMS = (
-    "valores",
-    "prejuízo",
-    "prejuizo",
-    "patrimonial",
-    "dinheiro",
-)
-PENAL_MATERIAL_CONTEXTUAL_TERMS = (
-    PENAL_MATERIAL_POSITIVE + PENAL_MATERIAL_CONCRETE_TERMS
-)
-PENAL_MATERIAL_REQUIRED_MARKERS = (
-    "penal",
-    "crime",
-    "relevância penal",
-    "relevancia penal",
-)
-PENAL_MATERIAL_QUERY_TEMPLATE = "{question}. Enquadramento penal material: infidelidade, burla, retenção de moeda, apropriação ilegítima, vantagem patrimonial. Diploma: Código Penal"
-PENAL_MATERIAL_FOLLOWUP_TEMPLATE = "{question}. Contexto anterior: {anchor}. Enquadramento penal material: infidelidade, burla, retenção de moeda, apropriação ilegítima, vantagem patrimonial. Diploma: Código Penal"
-PENAL_MATERIAL_QUESTION_REWRITE = (
-    "crime patrimonial empregador retenção valores trabalhador infidelidade burla"
-)
-PENAL_MATERIAL_FOLLOWUP_REWRITE = "mesmo caso crime patrimonial empregador retenção valores trabalhador infidelidade burla"
-PENAL_MATERIAL_CROSS_TERMS = (
-    "empregador",
-    "trabalhador",
-    "valores",
-    "pagamento",
-    "indemnização",
-    "indemnizacao",
-)
-PENAL_MATERIAL_TEXT_MIN_HITS = 1
-PENAL_MATERIAL_STRICT_REQUIRED = True
-PENAL_MATERIAL_TARGET_PAGES = {70, 79, 69, 67}
-PENAL_MATERIAL_ALLOWED_PAGES = {60, 67, 68, 69, 70, 71, 72, 79}
-PENAL_MATERIAL_BOOST_ARTICLES = {
-    "426": 3.0,
-    "417": 2.4,
-    "468": 2.0,
-    "406": 1.5,
-    "399": 1.2,
-}
-PENAL_MATERIAL_DROP_ARTICLES = {"141", "140", "51", "47", "91", "123"}
-PENAL_MATERIAL_FORCE_SLUG = {
-    "diploma_slug": PENAL_MATERIAL_SLUG,
-    "legal_branch": "penal",
-    "source_scope": "official",
-}
-PENAL_MATERIAL_BASE_WHERE = {"legal_branch": "penal", "source_scope": "official"}
-PENAL_MATERIAL_SELECTION_REASON = "penal_material_query"
-PENAL_MATERIAL_BRANCH_NAME = "penal"
-PENAL_MATERIAL_TRIGGER_NEEDS = {"laboral", "penal"}
-PENAL_MATERIAL_OUTPUT_LIMIT = 1
-PENAL_MATERIAL_LOW_VALUE_TERMS = (
-    "multa",
-    "indemnização do lesado",
-    "pagamento diferido",
-)
-PENAL_MATERIAL_SCORE_CUTOFF = 2.4
-PENAL_MATERIAL_RESCUE_LIMIT = 1
-PENAL_MATERIAL_RESCUE_SCORE = 2.0
-PENAL_MATERIAL_RESCUE_REASON = "penal_material_rescue"
-PENAL_MATERIAL_FALLBACK_QUERY = (
-    "crime patrimonial retenção valores pagamento trabalhador empregador"
-)
-PENAL_MATERIAL_CANONICAL_TERMS = (
-    "infidelidade",
-    "burla",
-    "retenção",
-    "retencao",
-    "apropriação",
-    "apropriacao",
-)
-PENAL_MATERIAL_PREFER_ARTICLE_BLOCK = True
-PENAL_MATERIAL_STRICT_BRANCH = True
-PENAL_MATERIAL_STRICT_SOURCE = True
-PENAL_MATERIAL_QUERY_REASONS = {
-    PENAL_MATERIAL_REASON,
-    PENAL_MATERIAL_SELECTION_REASON,
-    PENAL_MATERIAL_RESCUE_REASON,
-}
-PENAL_MATERIAL_MATCH_FLOOR = 1
-PENAL_MATERIAL_CONTEXT_BOOST = 1.6
-PENAL_MATERIAL_QUERY_BOOST = 2.2
-PENAL_MATERIAL_ARTICLE_BLOCK_BONUS = 1.2
-PENAL_MATERIAL_PAGE_BONUS = 0.8
-PENAL_MATERIAL_PAGE_PENALTY = -1.2
-PENAL_MATERIAL_NEGATIVE_PENALTY = -2.5
-PENAL_MATERIAL_POSITIVE_BONUS = 1.4
-PENAL_MATERIAL_DROP_PENALTY = -3.0
-PENAL_MATERIAL_FORCE_MIN = 0.8
-PENAL_MATERIAL_SELECTION_FLOOR = 0.5
-PENAL_MATERIAL_TEXT_REQUIRED = True
-PENAL_MATERIAL_BRANCH_PRIORITY = True
-PENAL_MATERIAL_QUERY_PRIORITY = True
-PENAL_MATERIAL_ONLY_FOR_MIXED = True
-PENAL_MATERIAL_HISTORY_REQUIRED = False
-PENAL_MATERIAL_SUPPORTS_FOLLOWUP = True
-PENAL_MATERIAL_SUPPORTS_DIRECT = True
-PENAL_MATERIAL_DEBUG = False
-PENAL_MATERIAL_LIMIT_NOTES = False
-PENAL_MATERIAL_KEEP_TOP = 1
-PENAL_MATERIAL_MIN_BRANCHES = 2
-PENAL_MATERIAL_EMBED_QUERY = True
-PENAL_MATERIAL_SCORE_NAME = "penal_material_score"
-PENAL_MATERIAL_BRANCH_GROUP = "penal"
-PENAL_MATERIAL_FORCE_ORDER = True
-PENAL_MATERIAL_FORCE_SELECTION = True
-PENAL_MATERIAL_FORCE_NOTES = False
-PENAL_MATERIAL_STRICT_FOLLOWUP = True
-PENAL_MATERIAL_KEEP_REASON = True
-PENAL_MATERIAL_USE_ANCHOR = True
-PENAL_MATERIAL_HISTORY_LABEL = "Contexto anterior"
-PENAL_MATERIAL_MIXED_LABEL = "Ramo penal material prioritário"
-PENAL_MATERIAL_FINAL_LIMIT = 1
-PENAL_MATERIAL_RELEVANCE_REQUIRED = True
-PENAL_MATERIAL_REWRITE_PRIORITY = True
-PENAL_MATERIAL_ARTICLE_PRIORITY = True
-PENAL_MATERIAL_QUERY_KIND = "penal_material"
-PENAL_MATERIAL_BRANCH_BUCKET = "penal"
-PENAL_MATERIAL_TOP_SCORE_BONUS = 1.0
-PENAL_MATERIAL_RETRIEVAL_MIN = 0.0
-PENAL_MATERIAL_CHUNK_TOPN = 3
-PENAL_MATERIAL_ENFORCE_ON_MIXED = True
-PENAL_MATERIAL_QUESTION_CHECK = True
-PENAL_MATERIAL_HISTORY_CHECK = True
-PENAL_MATERIAL_FALLBACK_ALLOWED = True
-PENAL_MATERIAL_DROP_GENERIC = True
-PENAL_MATERIAL_ISSUE_PREVENTION = True
-PENAL_MATERIAL_SCORE_STRICT = True
-PENAL_MATERIAL_REQUIRED_BRANCH = "penal"
-PENAL_MATERIAL_REQUIRED_SCOPE = "official"
-PENAL_MATERIAL_REQUIRED_SLUG = "codigo-penal-lei-38-20"
-PENAL_MATERIAL_BRANCH_TIEBREAK = True
-PENAL_MATERIAL_QUERY_STRING = PENAL_MATERIAL_FALLBACK_QUERY
-PENAL_MATERIAL_LAST = True
-PENAL_MATERIAL_FIRST = True
-PENAL_MATERIAL_NOTELESS = True
-PENAL_MATERIAL_SINGLE_KEEP = True
-PENAL_MATERIAL_SINGLE_PENAL = True
-PENAL_MATERIAL_SINGLE_LIMIT = 1
-PENAL_MATERIAL_SINGLE_BRANCH = "penal"
-PENAL_MATERIAL_SINGLE_SCORE = 2.2
-PENAL_MATERIAL_SINGLE_CUTOFF = 1.4
-PENAL_MATERIAL_SINGLE_WHERE = {
-    "legal_branch": "penal",
-    "source_scope": "official",
-    "diploma_slug": "codigo-penal-lei-38-20",
-}
-PENAL_MATERIAL_SINGLE_QUERY = "crime patrimonial empregador retenção valores trabalhador infidelidade burla código penal"
-PENAL_MATERIAL_SINGLE_REASON = "penal_material_direct"
-PENAL_MATERIAL_SINGLE_LABEL = "Fundamento penal material directo"
-PENAL_MATERIAL_SINGLE_REWRITE = (
-    "empregador trabalhador retenção valores crime patrimonial infidelidade burla"
-)
-PENAL_MATERIAL_SINGLE_TERMS = (
-    "infidelidade",
-    "burla",
-    "retenção",
-    "retencao",
-    "valores",
-    "patrimonial",
-)
-PENAL_MATERIAL_SINGLE_NEGATIVE = (
-    "multa",
-    "indemnização do lesado",
-    "responsabilidade civil emergente",
-)
-PENAL_MATERIAL_SINGLE_POSITIVE = (
-    "infidelidade",
-    "burla",
-    "vantagem patrimonial",
-    "retiver valores",
-    "prejuízo patrimonial",
-    "prejuizo patrimonial",
-)
-PENAL_MATERIAL_SINGLE_ARTICLE_ALLOW = {"426", "417", "468", "406", "399"}
-PENAL_MATERIAL_SINGLE_ARTICLE_DROP = {"141", "140", "51", "47", "91", "123"}
-PENAL_MATERIAL_SINGLE_PAGE_ALLOW = {67, 69, 70, 79}
-PENAL_MATERIAL_SINGLE_PAGE_PREFER = {70, 69, 79}
-PENAL_MATERIAL_SINGLE_BOOST = 3.2
-PENAL_MATERIAL_SINGLE_NEGATIVE_PENALTY = -2.7
-PENAL_MATERIAL_SINGLE_QUERY_BOOST = 2.4
-PENAL_MATERIAL_SINGLE_PAGE_BOOST = 1.1
-PENAL_MATERIAL_SINGLE_ARTICLE_BOOST = 1.5
-PENAL_MATERIAL_SINGLE_TEXT_REQUIRED = True
-PENAL_MATERIAL_SINGLE_SCORE_MIN = 2.5
-PENAL_MATERIAL_SINGLE_KEEP_TOP = 1
-PENAL_MATERIAL_SINGLE_BRANCH_LIMIT = 1
-PENAL_MATERIAL_SINGLE_APPLIES_TO = "mixed_penal_payment"
-PENAL_MATERIAL_SINGLE_ENFORCE = True
-PENAL_MATERIAL_SINGLE_FORCE_INCLUDE = True
-PENAL_MATERIAL_SINGLE_FORCE_REASON = "penal_material_direct"
-PENAL_MATERIAL_SINGLE_SELECTION = True
-PENAL_MATERIAL_SINGLE_PRIORITY = True
-PENAL_MATERIAL_SINGLE_STRICT = True
-PENAL_MATERIAL_SINGLE_MIXED_ONLY = True
-PENAL_MATERIAL_SINGLE_QUERY_PRIORITY = True
-PENAL_MATERIAL_SINGLE_RETRIEVAL_PRIORITY = True
-PENAL_MATERIAL_SINGLE_OUTPUT_LIMIT = 1
-PENAL_MATERIAL_SINGLE_CANDIDATE_LIMIT = 3
-PENAL_MATERIAL_SINGLE_RESCORE = True
-PENAL_MATERIAL_SINGLE_RESCUE = True
-PENAL_MATERIAL_SINGLE_RESCUE_SCORE = 2.1
-PENAL_MATERIAL_SINGLE_RESCUE_LIMIT = 1
-PENAL_MATERIAL_SINGLE_RESCUE_REASON = "penal_material_direct_rescue"
-PENAL_MATERIAL_SINGLE_FINAL_LIMIT = 1
-PENAL_MATERIAL_SINGLE_SCORE_FLOOR = 1.0
-PENAL_MATERIAL_SINGLE_ALLOWED_SCOPE = "official"
-PENAL_MATERIAL_SINGLE_ALLOWED_BRANCH = "penal"
-PENAL_MATERIAL_SINGLE_ALLOWED_SLUG = "codigo-penal-lei-38-20"
-PENAL_MATERIAL_SINGLE_QUERY_MODE = "targeted"
-PENAL_MATERIAL_SINGLE_TOPUP = True
-PENAL_MATERIAL_SINGLE_HARD_KEEP = True
-PENAL_MATERIAL_SINGLE_HARD_DROP = True
-PENAL_MATERIAL_SINGLE_HARD_FILTER = True
-PENAL_MATERIAL_SINGLE_BRANCH_PRIORITY = True
-PENAL_MATERIAL_SINGLE_SCORE_LABEL = "penal_material_direct_score"
-PENAL_MATERIAL_SINGLE_TARGET = "penal_material_direct"
-PENAL_MATERIAL_SINGLE_FALLBACK = True
-PENAL_MATERIAL_SINGLE_FALLBACK_QUERY = (
-    "crime patrimonial empregador trabalhador valores retidos infidelidade burla"
-)
-PENAL_MATERIAL_SINGLE_FALLBACK_REASON = "penal_material_direct_fallback"
-PENAL_MATERIAL_SINGLE_FALLBACK_LIMIT = 1
-PENAL_MATERIAL_SINGLE_FALLBACK_SCORE = 2.0
-PENAL_MATERIAL_SINGLE_FALLBACK_KEEP = True
-PENAL_MATERIAL_SINGLE_REQUIRE_TEXT = PENAL_MATERIAL_SINGLE_TERMS
-PENAL_MATERIAL_SINGLE_AVOID_TEXT = PENAL_MATERIAL_SINGLE_NEGATIVE
-PENAL_MATERIAL_SINGLE_REQUIRE_ARTICLE = PENAL_MATERIAL_SINGLE_ARTICLE_ALLOW
-PENAL_MATERIAL_SINGLE_AVOID_ARTICLE = PENAL_MATERIAL_SINGLE_ARTICLE_DROP
-PENAL_MATERIAL_SINGLE_REQUIRE_PAGE = PENAL_MATERIAL_SINGLE_PAGE_ALLOW
-PENAL_MATERIAL_SINGLE_PREFER_PAGE = PENAL_MATERIAL_SINGLE_PAGE_PREFER
-PENAL_MATERIAL_SINGLE_PATH = PENAL_MATERIAL_SINGLE_WHERE
-PENAL_MATERIAL_SINGLE_QUERY_TEXT = PENAL_MATERIAL_SINGLE_QUERY
-PENAL_MATERIAL_SINGLE_QUERY_TEXT_FALLBACK = PENAL_MATERIAL_SINGLE_FALLBACK_QUERY
-PENAL_MATERIAL_SINGLE_MIN_SCORE = 1.5
-PENAL_MATERIAL_SINGLE_MAX_COUNT = 1
-PENAL_MATERIAL_SINGLE_MAX_BRANCH = 1
-PENAL_MATERIAL_SINGLE_RESULT_LIMIT = 1
-PENAL_MATERIAL_SINGLE_TARGET_COUNT = 1
-PENAL_MATERIAL_SINGLE_BRANCH_NAME = "penal"
-PENAL_MATERIAL_SINGLE_SCOPE_NAME = "official"
-PENAL_MATERIAL_SINGLE_SLUG_NAME = "codigo-penal-lei-38-20"
-PENAL_MATERIAL_SINGLE_REQUIRE_MIXED = True
-PENAL_MATERIAL_SINGLE_TRIGGER_TERMS = MIXED_PENAL_TRIGGER_TERMS
-PENAL_MATERIAL_SINGLE_TRIGGER_HINTS = PENAL_MATERIAL_QUESTION_HINTS
-PENAL_MATERIAL_SINGLE_TRIGGER_FOLLOWUP = PENAL_MATERIAL_FOLLOWUP_HINTS
-PENAL_MATERIAL_SINGLE_CONTEXT_TERMS = PENAL_MATERIAL_LABOR_CONTEXT
-PENAL_MATERIAL_SINGLE_POSITIVE_TERMS = PENAL_MATERIAL_POSITIVE
-PENAL_MATERIAL_SINGLE_NEGATIVE_TERMS = PENAL_MATERIAL_NEGATIVE
-PENAL_MATERIAL_SINGLE_BOOST_ARTICLES = PENAL_MATERIAL_BOOST_ARTICLES
-PENAL_MATERIAL_SINGLE_DROP_ARTICLES = PENAL_MATERIAL_DROP_ARTICLES
-PENAL_MATERIAL_SINGLE_ALLOWED_PAGES = PENAL_MATERIAL_ALLOWED_PAGES
-PENAL_MATERIAL_SINGLE_TARGET_PAGES = PENAL_MATERIAL_TARGET_PAGES
-PENAL_MATERIAL_SINGLE_REQUIRED_TERMS = PENAL_MATERIAL_CONTEXTUAL_TERMS
-PENAL_MATERIAL_SINGLE_MIN_HITS = PENAL_MATERIAL_TEXT_MIN_HITS
-PENAL_MATERIAL_SINGLE_REQUIRED = True
-PENAL_MATERIAL_SINGLE_CANONICAL = PENAL_MATERIAL_CANONICAL_TERMS
-PENAL_MATERIAL_SINGLE_DIRECT_ONLY = False
-PENAL_MATERIAL_SINGLE_FOR_FOLLOWUP = True
-PENAL_MATERIAL_SINGLE_FOR_DIRECT = True
-PENAL_MATERIAL_SINGLE_FOR_MIXED = True
-PENAL_MATERIAL_SINGLE_FOR_PAYMENT = True
-PENAL_MATERIAL_SINGLE_FOR_INDEMNITY = True
-PENAL_MATERIAL_SINGLE_FOR_EMPLOYMENT = True
-PENAL_MATERIAL_SINGLE_FOR_QUESTION = True
-PENAL_MATERIAL_SINGLE_FOR_HISTORY = True
-PENAL_MATERIAL_SINGLE_FOR_BRANCH = True
-PENAL_MATERIAL_SINGLE_FOR_RESCUE = True
-PENAL_MATERIAL_SINGLE_FOR_SELECTION = True
-PENAL_MATERIAL_SINGLE_FOR_PRIORITY = True
-PENAL_MATERIAL_SINGLE_FOR_LIMIT = True
-PENAL_MATERIAL_SINGLE_FOR_OUTPUT = True
-PENAL_MATERIAL_SINGLE_FOR_NOTES = False
-PENAL_MATERIAL_SINGLE_FOR_DEBUG = False
-PENAL_MATERIAL_SINGLE_READY = True
-PENAL_MATERIAL_SINGLE_ACTIVE = True
-PENAL_MATERIAL_SINGLE_FINAL = True
-PENAL_MATERIAL_SINGLE_ENABLED = True
-PENAL_MATERIAL_SINGLE_USED = True
-PENAL_MATERIAL_SINGLE_STABLE = True
-PENAL_MATERIAL_SINGLE_SAFE = True
-PENAL_MATERIAL_SINGLE_PRECISE = True
-PENAL_MATERIAL_SINGLE_PRODUCTION = True
-PENAL_MATERIAL_SINGLE_CONTROLLED = True
-PENAL_MATERIAL_SINGLE_TARGETED = True
-PENAL_MATERIAL_SINGLE_HYBRID = True
-PENAL_MATERIAL_SINGLE_QUERYABLE = True
-PENAL_MATERIAL_SINGLE_BRANCHED = True
-PENAL_MATERIAL_SINGLE_ARTICLE_BLOCK = True
-PENAL_MATERIAL_SINGLE_PAGED = True
-PENAL_MATERIAL_SINGLE_FILTERED = True
-PENAL_MATERIAL_SINGLE_RERANKED = True
-PENAL_MATERIAL_SINGLE_SELECTIVE = True
-PENAL_MATERIAL_SINGLE_GUARDED = True
-PENAL_MATERIAL_SINGLE_MATERIAL = True
-PENAL_MATERIAL_SINGLE_END = True
 TOPIC_NEGATIVE_PATTERNS = {
     "penal_material": PENAL_BAD_PATTERNS,
 }
@@ -1293,113 +708,6 @@ THEME_BRANCH_LIMITS = {"penal": 1, "laboral": 4, "civil": 4}
 QUERY_BRANCH_FOCUS = True
 THEME_FORCE_BRANCH_WORDS = True
 THEME_SELECTION_REWRITE = True
-LABOR_OBJECTIVE_DISMISSAL_REASON = "labor_objective_dismissal_direct_article"
-PUBLIC_ASSET_REASON = "public_asset_direct_article"
-RELATIONSHIP_PROPERTY_THEFT_REASON = "relationship_property_theft_direct_article"
-POLICE_DETENTION_REASON = "police_detention_direct_article"
-STATE_AGENT_LIABILITY_REASON = "state_agent_liability_direct_article"
-CIVIL_LOAN_REASON = "civil_loan_direct_article"
-ADMIN_ACT_REASON = "admin_act_direct_article"
-LABOR_OBJECTIVE_DISMISSAL_ARTICLES = (
-    "284",
-    "285",
-    "286",
-    "287",
-    "288",
-    "289",
-    "290",
-    "298",
-    "300",
-    "308",
-    "310",
-    "313",
-)
-CIVIL_LOAN_ARTICLES = ("342", "362", "483", "798", "804", "805")
-ADMIN_ACT_TARGETS = (
-    ("lei-n-o-2-94-de-14-de-janeiro", ("9", "10", "11", "13"), 142.0),
-    (
-        "codigo-processo-contencioso-administrativo-33-22",
-        ("32", "64", "69", "73", "75"),
-        136.0,
-    ),
-)
-
-
-def _is_relationship_property_theft_query(text: str) -> bool:
-    normalized = _normalize(text)
-    has_relationship = any(
-        marker in normalized
-        for marker in (
-            "ex namorada",
-            "ex namorado",
-            "ex companheira",
-            "ex companheiro",
-            "ex esposa",
-            "ex marido",
-            "namorada",
-            "namorado",
-            "companheira",
-            "companheiro",
-            "casal",
-            "relação",
-            "relacao",
-        )
-    )
-    has_property_loss = any(
-        marker in normalized
-        for marker in (
-            "roubou",
-            "roubar",
-            "furtou",
-            "furtar",
-            "tirou",
-            "levou",
-            "subtraiu",
-            "ficou com",
-            "apropriou",
-            "dinheiro",
-            "kwanza",
-            "kzs",
-        )
-    )
-    return has_relationship and has_property_loss
-
-
-def _is_police_detention_rights_query(text: str) -> bool:
-    normalized = _normalize(text)
-    has_police = any(
-        marker in normalized
-        for marker in ("policia", "polícia", "agente policial", "autoridade", "esquadra")
-    )
-    has_detention = any(
-        marker in normalized
-        for marker in (
-            "prendeu",
-            "preso",
-            "detido",
-            "detencao",
-            "detenção",
-            "privacao da liberdade",
-            "privação da liberdade",
-        )
-    )
-    has_public_activity = any(
-        marker in normalized
-        for marker in (
-            "partido",
-            "politico",
-            "político",
-            "reuniao",
-            "reunião",
-            "manifestacao",
-            "manifestação",
-            "actividade",
-            "atividade",
-        )
-    )
-    return has_police and has_detention and (has_public_activity or "ilegal" in normalized)
-
-
 def _query_tokens(question: str) -> set[str]:
     tokens = {
         token.lower()
@@ -1614,26 +922,6 @@ def _question_specific_filter(
 def _apply_question_specific_filter(
     classification: LegalClassification, question: str, items: list[RetrievalEvidence]
 ) -> list[RetrievalEvidence]:
-    if _is_journalist_leak_public_interest_query(question):
-        direct = [item for item in items if _is_journalist_direct_evidence(item)]
-        filtered_rest = [
-            item
-            for item in items
-            if not _is_journalist_direct_evidence(item)
-            and _question_specific_filter(classification, question, item.chunk)
-        ]
-        ranked = _dedupe_ranked(direct + filtered_rest) if direct else filtered_rest
-        if ranked:
-            return sorted(
-                ranked,
-                key=lambda item: (
-                    item.score
-                    + _question_specific_score(classification, question, item.chunk),
-                    item.score,
-                ),
-                reverse=True,
-            )
-
     filtered = [
         item
         for item in items
@@ -1806,271 +1094,6 @@ def _branch_query_active(question: str, branch: str) -> bool:
     return any(marker in text for marker in BRANCH_QUERY_MARKERS.get(branch, ()))
 
 
-def _needs_penal_material_query(
-    classification: LegalClassification,
-    question: str,
-    conversation_history: list[str] | None,
-) -> bool:
-    if (
-        classification.main_branch != "misto"
-        or "penal" not in classification.branch_candidates
-    ):
-        return False
-    text = _normalize(question)
-    if any(marker in text for marker in PENAL_MATERIAL_QUESTION_HINTS) and any(
-        term in text for term in MIXED_PAYMENT_TERMS
-    ):
-        return True
-    if classification.specificity == "follow_up" and conversation_history:
-        history_text = _normalize(" ".join(conversation_history[-6:]))
-        if any(marker in text for marker in PENAL_MATERIAL_FOLLOWUP_HINTS) and any(
-            term in history_text for term in PENAL_MATERIAL_LABOR_CONTEXT
-        ):
-            return True
-    return False
-
-
-def _penal_material_query_text(
-    question: str, conversation_history: list[str] | None
-) -> str:
-    if conversation_history:
-        anchor = next(
-            (
-                item.split(":", 1)[1].strip()
-                for item in reversed(conversation_history)
-                if item.lower().startswith("utilizador:")
-            ),
-            "",
-        )
-        if anchor:
-            return PENAL_MATERIAL_FOLLOWUP_TEMPLATE.format(
-                question=question, anchor=anchor
-            )
-    return PENAL_MATERIAL_QUERY_TEMPLATE.format(question=question)
-
-
-def _penal_material_chunk_score(chunk: RetrievedChunk) -> float:
-    text = _normalize(chunk.text)
-    metadata = chunk.metadata or {}
-    refs = metadata.get("article_references") or []
-    score = 0.0
-    if metadata.get("segmentation") == "article_block":
-        score += PENAL_MATERIAL_ARTICLE_BLOCK_BONUS
-    if any(term in text for term in PENAL_MATERIAL_POSITIVE):
-        score += PENAL_MATERIAL_POSITIVE_BONUS
-    if any(term in text for term in PENAL_MATERIAL_CONTEXTUAL_TERMS):
-        score += PENAL_MATERIAL_CONTEXT_BOOST
-    if any(term in text for term in PENAL_MATERIAL_NEGATIVE):
-        score += PENAL_MATERIAL_NEGATIVE_PENALTY
-    if chunk.page in PENAL_MATERIAL_TARGET_PAGES:
-        score += PENAL_MATERIAL_PAGE_BONUS
-    elif chunk.page and chunk.page not in PENAL_MATERIAL_ALLOWED_PAGES:
-        score += PENAL_MATERIAL_PAGE_PENALTY
-    for article in refs:
-        normalized = str(article).replace(".", "")
-        score += PENAL_MATERIAL_BOOST_ARTICLES.get(normalized, 0.0)
-        if normalized in PENAL_MATERIAL_DROP_ARTICLES:
-            score += PENAL_MATERIAL_DROP_PENALTY
-    return score
-
-
-def _penal_material_candidate(chunk: RetrievedChunk) -> bool:
-    metadata = chunk.metadata or {}
-    if metadata.get("legal_branch") != "penal":
-        return False
-    if metadata.get("source_scope") != "official":
-        return False
-    if metadata.get("diploma_slug") != PENAL_MATERIAL_SLUG:
-        return False
-    text = _normalize(chunk.text)
-    refs = {
-        (str(item).replace(".", ""))
-        for item in (metadata.get("article_references") or [])
-    }
-    if refs & PENAL_MATERIAL_DROP_ARTICLES:
-        return False
-    if not (refs & PENAL_MATERIAL_ARTICLES):
-        return False
-    if any(term in text for term in PENAL_MATERIAL_NEGATIVE):
-        return False
-    return any(term in text for term in PENAL_MATERIAL_CANONICAL_TERMS)
-
-
-def _penal_material_rescue(
-    question: str, classification: LegalClassification, ranked: list[RetrievalEvidence]
-) -> list[RetrievalEvidence]:
-    if not _needs_penal_material_query(classification, question, None):
-        return ranked
-    penal_items = [
-        item
-        for item in ranked
-        if item.source_bucket == "official" and _penal_material_candidate(item.chunk)
-    ]
-    if not penal_items:
-        return ranked
-    boosted: list[RetrievalEvidence] = []
-    for item in penal_items:
-        boosted.append(
-            RetrievalEvidence(
-                query_used=item.query_used,
-                chunk=item.chunk,
-                score=item.score
-                + _penal_material_chunk_score(item.chunk)
-                + PENAL_MATERIAL_PROMOTION_BONUS,
-                retrieval_reason=PENAL_MATERIAL_REASON,
-                source_bucket=item.source_bucket,
-            )
-        )
-    survivors = [item for item in ranked if item not in penal_items]
-    merged = _dedupe_ranked(survivors + boosted)
-    return sorted(merged, key=lambda item: item.score, reverse=True)
-
-
-def _successions_direct_rescue(
-    question: str, classification: LegalClassification
-) -> list[RetrievalEvidence]:
-    if classification.topic_route != "sucessoes":
-        return []
-    if "Código Civil" not in classification.requested_diplomas and "Codigo Civil" not in classification.requested_diplomas:
-        return []
-    terms = (
-        "herança",
-        "heranca",
-        "sucessão",
-        "sucessao",
-        "herdeiro",
-        "herdeiros",
-        "testamento",
-        "partilha",
-        "inventário",
-        "inventario",
-        "aceitação",
-        "aceitacao",
-        "repúdio",
-        "repudio",
-        "colação",
-        "colacao",
-    )
-    where_clause = "diploma_slug = %s AND source_scope = 'official' AND (" + " OR ".join(
-        ["text_content ILIKE %s"] * len(terms)
-    ) + ")"
-    params: list[str] = ["codigo-civil"] + [f"%{term}%" for term in terms]
-    sql = f"""
-        SELECT id, source, title, link_original, page, article_number, law_status,
-               source_scope, document_id, metadata, text_content, embedding
-        FROM legal_segments
-        WHERE {where_clause}
-        ORDER BY page ASC, article_number ASC
-        LIMIT 10
-    """
-    try:
-        with postgres_manager.connection() as conn, conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-    except Exception:
-        return []
-    boosted: list[RetrievalEvidence] = []
-    for row in rows:
-        chunk = postgres_manager._segment_to_chunk(row)
-        boosted.append(
-            RetrievalEvidence(
-                query_used=question,
-                chunk=chunk,
-                score=50.0 + _score_chunk(classification, chunk, "topic_route"),
-                retrieval_reason="topic_route",
-                source_bucket=_source_bucket(chunk),
-            )
-        )
-    return boosted
-
-
-def _cpp_direct_rescue(
-    question: str, classification: LegalClassification
-) -> list[RetrievalEvidence]:
-    if classification.topic_route != "cpp":
-        return []
-    question_norm = _normalize(question)
-    needs_recurso = any(
-        term in question_norm
-        for term in (
-            "recurso",
-            "recorrer",
-            "interposição",
-            "interposicao",
-            "apelação",
-            "apelacao",
-            "reclamação",
-            "reclamacao",
-        )
-    )
-    needs_prazo = any(term in question_norm for term in ("prazo", "prazos", "dias"))
-    if not (needs_recurso or needs_prazo):
-        return []
-
-    exact_phrase_terms = (
-        "prazo de recurso",
-        "prazo de interposição",
-        "prazo de interposicao",
-        "prazo para recurso",
-        "prazo para recorrer",
-        "interposição de recurso",
-        "interposicao de recurso",
-        "recurso",
-        "prazo",
-    )
-    broad_terms = exact_phrase_terms + (
-        "apelação",
-        "apelacao",
-        "reclamação",
-        "reclamacao",
-        "impugnação",
-        "impugnacao",
-    )
-    terms = exact_phrase_terms if needs_recurso and needs_prazo else broad_terms
-    where_clause = (
-        "diploma_slug = %s AND source_scope = 'official' AND legal_branch = 'penal' AND ("
-        + " OR ".join(["text_content ILIKE %s"] * len(terms))
-        + ")"
-    )
-    params: list[str] = ["codigo-processo-penal-lei-39-20"] + [f"%{term}%" for term in terms]
-    sql = f"""
-        SELECT id, source, title, link_original, page, article_number, law_status,
-               source_scope, document_id, metadata, text_content, embedding
-        FROM legal_segments
-        WHERE {where_clause}
-        ORDER BY
-            CASE
-                WHEN article_number IN ('463', '466', '460') THEN -1
-                WHEN article_number IN ('294', '295') THEN 0
-                WHEN text_content ILIKE '%prazo de recurso%' THEN 0
-                WHEN text_content ILIKE '%prazo de interposição%' THEN 1
-                WHEN text_content ILIKE '%interposição de recurso%' THEN 2
-                WHEN text_content ILIKE '%prazo%' AND text_content ILIKE '%recurso%' THEN 3
-                ELSE 9
-            END,
-            page ASC,
-            article_number ASC
-        LIMIT 12
-    """
-    try:
-        with postgres_manager.connection() as conn, conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-    except Exception:
-        return []
-    boosted: list[RetrievalEvidence] = []
-    for row in rows:
-        chunk = postgres_manager._segment_to_chunk(row)
-        boosted.append(
-            RetrievalEvidence(
-                query_used=question,
-                chunk=chunk,
-                score=48.0 + _score_chunk(classification, chunk, "topic_route"),
-                retrieval_reason="topic_route",
-                source_bucket=_source_bucket(chunk),
-            )
-        )
-    return boosted
 
 
 def _thematic_relevance_score(
@@ -2385,119 +1408,22 @@ def _prioritize_legal_concept_rescue(
     return selected[:THEME_LIMIT_OFFICIAL] or official
 
 
-def _balance_journalist_public_interest_evidence(
-    official: list[RetrievalEvidence], limit: int = 10
-) -> list[RetrievalEvidence]:
-    selected: list[RetrievalEvidence] = []
-    seen_chunk_ids: set[str] = set()
-
-    for slug, article in JOURNALIST_LEAK_SOURCE_ORDER:
-        match = next(
-            (
-                item
-                for item in official
-                if (item.chunk.metadata or {}).get("diploma_slug") == slug
-                and article in _evidence_article_numbers(item)
-                and item.chunk.chunk_id not in seen_chunk_ids
-            ),
-            None,
-        )
-        if match:
-            selected.append(match)
-            seen_chunk_ids.add(match.chunk.chunk_id)
-        if len(selected) >= limit:
-            return selected
-
-    for item in official:
-        if item.chunk.chunk_id in seen_chunk_ids:
-            continue
-        selected.append(item)
-        seen_chunk_ids.add(item.chunk.chunk_id)
-        if len(selected) >= limit:
-            break
-    return selected or official[:limit]
-
-
-def _balance_relationship_property_theft_evidence(
-    official: list[RetrievalEvidence], limit: int = 10
-) -> list[RetrievalEvidence]:
-    selected: list[RetrievalEvidence] = []
-    seen_chunk_ids: set[str] = set()
-    quotas = {
-        "codigo-penal-lei-38-20": 4,
-        "codigo-familia-lei-1-88": 2,
-        "codigo-civil": 3,
-    }
-    counts = {slug: 0 for slug in quotas}
-
-    for item in official:
-        slug = (item.chunk.metadata or {}).get("diploma_slug")
-        if slug not in quotas or counts[slug] >= quotas[slug]:
-            continue
-        selected.append(item)
-        seen_chunk_ids.add(item.chunk.chunk_id)
-        counts[slug] += 1
-        if len(selected) >= limit:
-            return selected
-
-    for item in official:
-        if item.chunk.chunk_id in seen_chunk_ids:
-            continue
-        selected.append(item)
-        seen_chunk_ids.add(item.chunk.chunk_id)
-        if len(selected) >= limit:
-            break
-    return selected or official[:limit]
-
-
-def _balance_police_detention_evidence(
-    official: list[RetrievalEvidence], limit: int = 10
-) -> list[RetrievalEvidence]:
-    selected: list[RetrievalEvidence] = []
-    seen_chunk_ids: set[str] = set()
-    quotas = {
-        "constituicao-republica-angola-2022": 4,
-        "codigo-processo-penal-lei-39-20": 4,
-    }
-    counts = {slug: 0 for slug in quotas}
-
-    for item in official:
-        slug = (item.chunk.metadata or {}).get("diploma_slug")
-        if slug not in quotas or counts[slug] >= quotas[slug]:
-            continue
-        selected.append(item)
-        seen_chunk_ids.add(item.chunk.chunk_id)
-        counts[slug] += 1
-        if len(selected) >= limit:
-            return selected
-
-    for item in official:
-        if item.chunk.chunk_id in seen_chunk_ids:
-            continue
-        selected.append(item)
-        seen_chunk_ids.add(item.chunk.chunk_id)
-        if len(selected) >= limit:
-            break
-    return selected or official[:limit]
-
-
 def _limit_by_branch(
     classification: LegalClassification, official: list[RetrievalEvidence]
 ) -> list[RetrievalEvidence]:
-    if any(_is_journalist_direct_evidence(item) for item in official):
-        return _balance_journalist_public_interest_evidence(official, limit=10)
-    if any(_is_relationship_property_theft_direct_evidence(item) for item in official):
-        return _balance_relationship_property_theft_evidence(official, limit=10)
-    if any(_is_police_detention_direct_evidence(item) for item in official):
-        return _balance_police_detention_evidence(official, limit=10)
     if classification.main_branch != "misto":
         return official[:THEME_LIMIT_OFFICIAL]
     selected: list[RetrievalEvidence] = []
-    branch_counts: dict[str, int] = {"laboral": 0, "penal": 0, "civil": 0}
+    target_branches = [
+        branch
+        for branch in classification.branch_candidates
+        if branch not in {"misto", "indeterminado"}
+    ]
+    per_branch_limit = max(1, THEME_LIMIT_OFFICIAL // max(1, len(target_branches)))
+    branch_counts: dict[str, int] = {branch: 0 for branch in target_branches}
     for item in official:
         branch = _chunk_branch(item.chunk)
-        limit = THEME_BRANCH_LIMITS.get(branch, THEME_LIMIT_OFFICIAL)
-        if branch in branch_counts and branch_counts[branch] >= limit:
+        if branch in branch_counts and branch_counts[branch] >= per_branch_limit:
             continue
         selected.append(item)
         if branch in branch_counts:
@@ -3103,44 +2029,6 @@ def _query_specificity_score(
             score += 1.2
         elif any(term in text for term in ("recurso", "prazo")):
             score -= 2.0
-    if classification.topic_route == "penal_substantivo":
-        if "burla" in query:
-            if "burla" in text:
-                score += 4.0
-            elif any(
-                term in text
-                for term in (
-                    "fraude",
-                    "vantagem patrimonial",
-                    "prejuízo patrimonial",
-                    "prejuizo patrimonial",
-                )
-                ):
-                score += 0.8
-            else:
-                score -= 2.5
-        if "infidelidade" in query:
-            if "infidelidade" in text:
-                score += 4.0
-            else:
-                score -= 2.5
-        if _is_public_asset_misuse_query(query):
-            refs = {
-                str(item).replace(".", "")
-                for item in (chunk.metadata or {}).get("article_references", [])
-            }
-            for article, bonus in PUBLIC_ASSET_MISUSE_ARTICLE_BOOSTS.items():
-                if article in refs:
-                    score += bonus
-            if any(term in text for term in PUBLIC_ASSET_MISUSE_STRONG_TERMS):
-                score += 5.0
-            if any(term in text for term in PUBLIC_ASSET_MISUSE_SECONDARY_TERMS):
-                score += 2.4
-            if (
-                any(term in text for term in PUBLIC_ASSET_MISUSE_COMPANY_MARKERS)
-                and not any(term in query for term in PUBLIC_ASSET_MISUSE_COMPANY_MARKERS)
-            ):
-                score -= 4.2
     if classification.topic_route == "laboral":
         labor_query_terms = (
             "despedimento",
@@ -3748,18 +2636,6 @@ def _build_queries(
             _merge_where({"source_scope": "official", "legal_branch": where_branch}),
         )
 
-    if _needs_penal_material_query(classification, question, conversation_history):
-        add(
-            _penal_material_query_text(question, conversation_history),
-            PENAL_MATERIAL_REASON,
-            PENAL_MATERIAL_BASE_WHERE,
-        )
-        add(
-            PENAL_MATERIAL_FALLBACK_QUERY,
-            PENAL_MATERIAL_RESCUE_REASON,
-            PENAL_MATERIAL_SINGLE_WHERE,
-        )
-
     if _needs_jurisprudence_query(question, classification):
         add(
             f"{question}. Sumário de acórdão e jurisprudência angolana relevante.",
@@ -3775,297 +2651,8 @@ def _build_queries(
     return queries
 
 
-def _boost_penal_material_reason(
-    classification: LegalClassification, evidence: RetrievalEvidence
-) -> RetrievalEvidence:
-    if evidence.retrieval_reason not in PENAL_MATERIAL_QUERY_REASONS:
-        return evidence
-    return RetrievalEvidence(
-        query_used=evidence.query_used,
-        chunk=evidence.chunk,
-        score=evidence.score
-        + PENAL_MATERIAL_QUERY_BOOST
-        + _penal_material_chunk_score(evidence.chunk),
-        retrieval_reason=evidence.retrieval_reason,
-        source_bucket=evidence.source_bucket,
-    )
 
 
-def _apply_reason_specific_boosts(
-    classification: LegalClassification, ranked: list[RetrievalEvidence]
-) -> list[RetrievalEvidence]:
-    boosted = [_boost_penal_material_reason(classification, item) for item in ranked]
-    return sorted(boosted, key=lambda item: item.score, reverse=True)
-
-
-def _penal_material_selection(
-    classification: LegalClassification,
-    question: str,
-    official: list[RetrievalEvidence],
-) -> list[RetrievalEvidence]:
-    if not _needs_penal_material_query(classification, question, None):
-        return official
-    penal_candidates = [
-        item for item in official if _penal_material_candidate(item.chunk)
-    ]
-    penal_candidates = sorted(
-        penal_candidates,
-        key=lambda item: item.score + _penal_material_chunk_score(item.chunk),
-        reverse=True,
-    )[:PENAL_MATERIAL_SINGLE_LIMIT]
-    if not penal_candidates:
-        return official
-    kept = [item for item in official if item not in penal_candidates]
-    return _dedupe_ranked(penal_candidates + kept)
-
-
-def _apply_penal_material_priority(
-    classification: LegalClassification, question: str, ranked: list[RetrievalEvidence]
-) -> list[RetrievalEvidence]:
-    ranked = _apply_reason_specific_boosts(classification, ranked)
-    ranked = _penal_material_rescue(question, classification, ranked)
-    return ranked
-
-
-def _final_penal_material_official(
-    classification: LegalClassification,
-    question: str,
-    official: list[RetrievalEvidence],
-) -> list[RetrievalEvidence]:
-    return _penal_material_selection(classification, question, official)
-
-
-def _apply_penal_material_postfilter(
-    classification: LegalClassification,
-    question: str,
-    official: list[RetrievalEvidence],
-) -> list[RetrievalEvidence]:
-    return _final_penal_material_official(classification, question, official)
-
-
-def _direct_jurisprudence_rescue(
-    question: str, classification: LegalClassification
-) -> list[RetrievalEvidence]:
-    normalized_question = _normalize(question)
-    if not _needs_jurisprudence_query(question, classification):
-        return []
-    if not re.search(r"extra\s+vel\s+ultra|extra\s+petit|ultra\s+petit|petita", normalized_question):
-        return []
-
-    sql = """
-        SELECT id, source, title, link_original, page, article_number, law_status,
-               source_scope, document_id, metadata, text_content
-        FROM legal_segments
-        WHERE metadata->>'document_kind' = 'jurisprudence'
-          AND legal_branch = 'laboral'
-          AND (
-                (text_content ILIKE %s AND text_content ILIKE %s)
-                OR title ILIKE %s
-              )
-        ORDER BY
-          CASE WHEN text_content ILIKE %s THEN 0 ELSE 1 END,
-          title ASC
-        LIMIT 4
-    """
-    try:
-        with postgres_manager.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                sql,
-                (
-                    "%extra%",
-                    "%ultra%",
-                    "%Matéria Disciplinar%",
-                    "%petita%",
-                ),
-            )
-            return [
-                RetrievalEvidence(
-                    query_used=question,
-                    chunk=postgres_manager._segment_to_chunk(row),
-                    score=125.0,
-                    retrieval_reason="jurisprudence",
-                    source_bucket="official",
-                )
-                for row in cur.fetchall()
-            ]
-    except Exception:
-        return []
-
-
-def _unique_preserve_order(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    unique: list[str] = []
-    for item in items:
-        normalized = _normalize(item)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        unique.append(item)
-    return unique
-
-
-def _concept_phrases_for_query(
-    question: str,
-    classification: LegalClassification,
-    conversation_history: list[str] | None,
-) -> list[str]:
-    history_text = " ".join(conversation_history[-8:] if conversation_history else [])
-    current_question = question or ""
-    pro_context_markers = (
-        "\nCliente:",
-        "\nÁrea jurídica:",
-        "\nArea juridica:",
-        "\nFactos relevantes:",
-        "\nTermos jurídicos:",
-        "\nTermos juridicos:",
-        "\nDiplomas prováveis:",
-        "\nDiplomas provaveis:",
-        "\nContexto profissional do caso associado:",
-    )
-    marker_positions = [
-        current_question.find(marker)
-        for marker in pro_context_markers
-        if marker in current_question
-    ]
-    if marker_positions:
-        current_question = current_question[: min(marker_positions)]
-    query_text = _normalize(current_question)
-    text = _normalize(f"{question} {history_text}")
-    phrases: list[str] = []
-    explicit_public_agent_issue = any(
-        term in text
-        for term in (
-            "policia",
-            "policial",
-            "agente",
-            "autoridade",
-            "funcionario",
-            "funcionário",
-            "acto policial",
-            "ato policial",
-        )
-    ) and any(
-        term in text
-        for term in (
-            "desacato",
-            "desobediencia",
-            "desobediência",
-            "resistiu",
-            "resistir",
-            "resistencia",
-            "resistência",
-            "violencia",
-            "violência",
-            "ameaca",
-            "ameaça",
-            "filmar",
-            "filmagem",
-            "gravacao",
-            "gravação",
-            "fotograf",
-        )
-    )
-    branch_is_penal = (
-        classification.main_branch in {"penal", "misto"}
-        or "penal" in classification.branch_candidates
-    )
-    if not branch_is_penal and not explicit_public_agent_issue:
-        return []
-    if (
-        classification.topic_route not in {"penal_substantivo", "cpp", "geral"}
-        and not explicit_public_agent_issue
-    ):
-        return []
-
-    has_public_agent_context = any(
-        term in text
-        for term in (
-            "policia",
-            "policial",
-            "agente",
-            "autoridade",
-            "funcionario",
-            "funcionário",
-            "forcas de seguranca",
-            "forças de segurança",
-        )
-    )
-    has_order_context = any(
-        term in text
-        for term in (
-            "ordem",
-            "mandado",
-            "parasse",
-            "parar",
-            "interrompeu",
-            "perturbacao",
-            "perturbação",
-            "desacato",
-            "desobediencia",
-            "desobediência",
-        )
-    )
-    resistance_haystack = query_text
-    has_negated_resistance_context = any(
-        term in query_text
-        for term in (
-            "sem violencia",
-            "sem violência",
-            "sem ameaca",
-            "sem ameaça",
-            "nao ha violencia",
-            "não há violência",
-            "nao ha ameaca",
-            "não há ameaça",
-            "não há notícia de insultos, ameaça",
-            "nao ha noticia de insultos, ameaca",
-        )
-    )
-    has_resistance_context = any(
-        term in resistance_haystack
-        for term in (
-            "resistencia",
-            "resistência",
-            "resistiu",
-            "resistir",
-            "resistindo",
-            "violencia",
-            "violência",
-            "ameaca",
-            "ameaça",
-            "impedir",
-            "obstrucao",
-            "obstrução",
-        )
-    ) and not has_negated_resistance_context
-    has_recording_context = any(
-        term in text
-        for term in (
-            "filmar",
-            "filmagem",
-            "filmou",
-            "fotograf",
-            "gravacao",
-            "gravação",
-            "video",
-            "vídeo",
-            "imagem",
-        )
-    )
-    has_public_asset_context = _is_public_asset_misuse_query(text)
-
-    if has_order_context and has_public_agent_context:
-        phrases.append("desobediência")
-    if has_resistance_context and has_public_agent_context:
-        phrases.append("resistência contra funcionário")
-    if has_recording_context:
-        phrases.append("gravações, fotografias e filmes ilícitos")
-    if has_public_asset_context:
-        phrases.append("peculato de uso")
-        phrases.append("peculato")
-        phrases.append("abuso de poder")
-
-    return _unique_preserve_order(phrases)
 
 
 def _concept_chunk_score(
@@ -4075,7 +2662,6 @@ def _concept_chunk_score(
 ) -> float:
     text = _normalize(chunk.text)
     phrase_norm = _normalize(phrase)
-    query = _normalize(question)
     refs = {
         str(item).replace(".", "").strip()
         for item in (chunk.metadata or {}).get("article_references", [])
@@ -4086,45 +2672,6 @@ def _concept_chunk_score(
         score += 18.0
     phrase_tokens = [token for token in WORD_RE.findall(phrase_norm) if token not in STOPWORDS]
     score += sum(2.0 for token in phrase_tokens if token in text)
-
-    if "desobed" in phrase_norm:
-        if "ordens ou mandados legitimos" in text or "ordens ou mandados legítimos" in text:
-            score += 18.0
-        if "autoridade ou funcionario competente" in text or "autoridade ou funcionário competente" in text:
-            score += 12.0
-        if "publicacoes suspensas" in text or "publicações suspensas" in text:
-            score -= 20.0
-        if any(term in query for term in ("policia", "policial", "agente", "autoridade")) and not any(
-            term in text for term in ("autoridade", "funcionario", "funcionário")
-        ):
-            score -= 8.0
-    if "resistencia contra funcionario" in phrase_norm or "resistência contra funcionário" in phrase_norm:
-        if "violencia ou ameaca de violencia" in text or "violência ou ameaça de violência" in text:
-            score += 18.0
-        if "forcas militares" in text or "forças militares" in text or "ordem publica" in text or "ordem pública" in text:
-            score += 10.0
-    if "gravacoes" in phrase_norm or "gravações" in phrase_norm:
-        if "fotografias e filmes ilicitos" in text or "fotografias e filmes ilícitos" in text:
-            score += 20.0
-        if "lugar publico" in text or "lugar público" in text:
-            score += 6.0
-    if "peculato de uso" in phrase_norm:
-        if any(term in text for term in PUBLIC_ASSET_MISUSE_STRONG_TERMS):
-            score += 22.0
-        if "peculato" in text:
-            score += 10.0
-    if phrase_norm == "peculato":
-        if "peculato" in text:
-            score += 18.0
-        if "peculato de uso" in text:
-            score += 8.0
-    if "abuso de poder" in phrase_norm and "abuso de poder" in text:
-        score += 12.0
-    if (
-        any(term in text for term in PUBLIC_ASSET_MISUSE_COMPANY_MARKERS)
-        and not any(term in query for term in PUBLIC_ASSET_MISUSE_COMPANY_MARKERS)
-    ):
-        score -= 10.0
 
     if (chunk.metadata or {}).get("segmentation") == "article_block":
         score += 6.0
@@ -4138,41 +2685,19 @@ def _direct_legal_concept_rescue(
     classification: LegalClassification,
     conversation_history: list[str] | None,
 ) -> list[RetrievalEvidence]:
-    phrases = _concept_phrases_for_query(question, classification, conversation_history)
+    phrases = legal_query_planner.plan(question, classification).concepts[:8]
     if not phrases:
         return []
 
     rescued: list[RetrievalEvidence] = []
-    if _is_public_asset_misuse_query(question):
-        direct_targets = (
-            ("codigo-penal-lei-38-20", ("363", "362", "374"), 125.0),
-            ("constituicao-republica-angola-2022", ("75",), 116.0),
-            ("lei-n-o-3-10-de-29-de-marco", ("7", "26"), 112.0),
-            ("codigo-civil", ("483",), 108.0),
-        )
-        for slug, articles, base_score in direct_targets:
-            for index, article in enumerate(articles):
-                chunk = _best_direct_article_chunk(slug, article)
-                if chunk:
-                    rescued.append(
-                        RetrievalEvidence(
-                            query_used=f"{question}. Artigo nuclear recuperado: {article}",
-                            chunk=chunk,
-                            score=base_score - (index * 0.5),
-                            retrieval_reason=PUBLIC_ASSET_REASON,
-                            source_bucket=_source_bucket(chunk),
-                        )
-                    )
-
     sql = """
         SELECT id, source, title, link_original, page, article_number, law_status,
                source_scope, document_id, metadata, text_content
         FROM legal_segments
         WHERE source_scope = 'official'
-          AND legal_branch = 'penal'
-          AND metadata->>'diploma_slug' = 'codigo-penal-lei-38-20'
           AND (
                 text_content ILIKE %s
+                OR title ILIKE %s
                 OR lower(coalesce(metadata->>'article_main', '')) = lower(%s)
               )
         ORDER BY page ASC, article_number ASC
@@ -4181,7 +2706,7 @@ def _direct_legal_concept_rescue(
     try:
         with postgres_manager.connection() as conn, conn.cursor() as cur:
             for phrase in phrases:
-                cur.execute(sql, (f"%{phrase}%", phrase))
+                cur.execute(sql, (f"%{phrase}%", f"%{phrase}%", phrase))
                 candidates: list[RetrievalEvidence] = []
                 for row in cur.fetchall():
                     chunk = postgres_manager._segment_to_chunk(row)
@@ -4205,387 +2730,6 @@ def _direct_legal_concept_rescue(
     return _dedupe_ranked(rescued)[:6]
 
 
-def _evidence_article_numbers(evidence: RetrievalEvidence) -> set[str]:
-    chunk = evidence.chunk
-    numbers: set[str] = set()
-    metadata = chunk.metadata or {}
-    for value in (
-        chunk.article_number,
-        metadata.get("article_main"),
-        *(metadata.get("article_references") or []),
-    ):
-        if not value:
-            continue
-        for part in str(value).split(","):
-            normalized = part.strip().replace(".", "")
-            if normalized:
-                numbers.add(normalized)
-    return numbers
-
-
-def _ensure_public_asset_evidence(
-    question: str, official: list[RetrievalEvidence]
-) -> list[RetrievalEvidence]:
-    if not _is_public_asset_misuse_query(question):
-        return official
-
-    direct_targets = (
-        ("codigo-penal-lei-38-20", ("363", "362", "374"), 150.0),
-        ("constituicao-republica-angola-2022", ("75",), 144.0),
-        ("lei-n-o-3-10-de-29-de-marco", ("7", "26"), 138.0),
-        ("codigo-civil", ("483",), 132.0),
-    )
-    direct: list[RetrievalEvidence] = []
-    for slug, articles, base_score in direct_targets:
-        for index, article in enumerate(articles):
-            chunk = _best_direct_article_chunk(slug, article)
-            if chunk:
-                direct.append(
-                    RetrievalEvidence(
-                        query_used=f"{question}. Artigo nuclear recuperado: {article}",
-                        chunk=chunk,
-                        score=base_score - (index * 0.5),
-                        retrieval_reason=PUBLIC_ASSET_REASON,
-                        source_bucket=_source_bucket(chunk),
-                    )
-                )
-
-    combined = _dedupe_ranked(direct + official)
-    allowed: list[RetrievalEvidence] = []
-    for evidence in combined:
-        slug = (evidence.chunk.metadata or {}).get("diploma_slug")
-        articles = _evidence_article_numbers(evidence)
-        if slug == "codigo-penal-lei-38-20" and articles.intersection(
-            {"362", "363", "374"}
-        ):
-            allowed.append(evidence)
-        elif slug == "constituicao-republica-angola-2022" and "75" in articles:
-            allowed.append(evidence)
-        elif slug == "lei-n-o-3-10-de-29-de-marco" and articles.intersection(
-            {"7", "26"}
-        ):
-            allowed.append(evidence)
-        elif slug == "codigo-civil" and "483" in articles:
-            allowed.append(evidence)
-    return allowed[:9] if allowed else official
-
-
-def _ensure_relationship_property_theft_evidence(
-    question: str, official: list[RetrievalEvidence]
-) -> list[RetrievalEvidence]:
-    if not _is_relationship_property_theft_query(question):
-        return official
-
-    direct_targets = (
-        ("codigo-penal-lei-38-20", ("392", "394", "400", "404", "401"), 150.0),
-        ("codigo-familia-lei-1-88", ("60", "56", "57"), 132.0),
-        ("codigo-civil", ("1689", "483", "804", "805"), 126.0),
-    )
-    direct: list[RetrievalEvidence] = []
-    for slug, articles, base_score in direct_targets:
-        for index, article in enumerate(articles):
-            chunk = _best_direct_article_chunk(slug, article)
-            if chunk:
-                direct.append(
-                    RetrievalEvidence(
-                        query_used=f"{question}. Artigo nuclear recuperado: {article}",
-                        chunk=chunk,
-                        score=base_score - (index * 0.5),
-                        retrieval_reason=RELATIONSHIP_PROPERTY_THEFT_REASON,
-                        source_bucket=_source_bucket(chunk),
-                    )
-                )
-
-    combined = _dedupe_ranked(direct + official)
-    allowed: list[RetrievalEvidence] = []
-    for evidence in combined:
-        slug = (evidence.chunk.metadata or {}).get("diploma_slug")
-        articles = _evidence_article_numbers(evidence)
-        if slug == "codigo-penal-lei-38-20" and articles.intersection(
-            {"392", "394", "400", "401", "404"}
-        ):
-            allowed.append(evidence)
-        elif slug == "codigo-familia-lei-1-88" and articles.intersection(
-            {"56", "57", "60"}
-        ):
-            allowed.append(evidence)
-        elif slug == "codigo-civil" and articles.intersection(
-            {"483", "804", "805", "1689"}
-        ):
-            allowed.append(evidence)
-
-    return allowed[:10] if allowed else official
-
-
-def _ensure_police_detention_evidence(
-    question: str, official: list[RetrievalEvidence]
-) -> list[RetrievalEvidence]:
-    if not _is_police_detention_rights_query(question):
-        return official
-
-    direct_targets = (
-        ("constituicao-republica-angola-2022", ("47", "63", "64", "68"), 150.0),
-        ("codigo-processo-penal-lei-39-20", ("250", "169", "288", "290", "291"), 142.0),
-    )
-    direct: list[RetrievalEvidence] = []
-    for slug, articles, base_score in direct_targets:
-        for index, article in enumerate(articles):
-            chunk = _best_direct_article_chunk(slug, article)
-            if chunk:
-                direct.append(
-                    RetrievalEvidence(
-                        query_used=f"{question}. Artigo nuclear recuperado: {article}",
-                        chunk=chunk,
-                        score=base_score - (index * 0.5),
-                        retrieval_reason=POLICE_DETENTION_REASON,
-                        source_bucket=_source_bucket(chunk),
-                    )
-                )
-
-    combined = _dedupe_ranked(direct + official)
-    allowed: list[RetrievalEvidence] = []
-    for evidence in combined:
-        slug = (evidence.chunk.metadata or {}).get("diploma_slug")
-        articles = _evidence_article_numbers(evidence)
-        if slug == "constituicao-republica-angola-2022" and articles.intersection(
-            {"47", "63", "64", "68"}
-        ):
-            allowed.append(evidence)
-        elif slug == "codigo-processo-penal-lei-39-20" and articles.intersection(
-            {"169", "250", "288", "290", "291"}
-        ):
-            allowed.append(evidence)
-
-    return allowed[:10] if allowed else official
-
-
-def _ensure_journalist_leak_evidence(
-    question: str, official: list[RetrievalEvidence]
-) -> list[RetrievalEvidence]:
-    if not _is_journalist_leak_public_interest_query(question):
-        return official
-
-    direct_targets = (
-        ("codigo-penal-lei-38-20", ("359", "358", "357", "362", "364", "375", "356"), 140.0),
-        ("constituicao-republica-angola-2022", ("40", "44", "32", "57", "69"), 136.0),
-    )
-    direct: list[RetrievalEvidence] = []
-    for slug, articles, base_score in direct_targets:
-        for index, article in enumerate(articles):
-            chunk = _best_direct_article_chunk(slug, article)
-            if chunk:
-                direct.append(
-                    RetrievalEvidence(
-                        query_used=f"{question}. Artigo nuclear recuperado: {article}",
-                        chunk=chunk,
-                        score=base_score - (index * 0.5),
-                        retrieval_reason="journalist_public_interest_direct_article",
-                        source_bucket=_source_bucket(chunk),
-                    )
-                )
-
-    combined = _dedupe_ranked(direct + official)
-    allowed: list[RetrievalEvidence] = []
-    allowed_penal = {"357", "358", "359", "362", "364", "375", "356", "232", "224"}
-    allowed_constitutional = {"32", "40", "44", "57", "69"}
-    for evidence in combined:
-        slug = (evidence.chunk.metadata or {}).get("diploma_slug")
-        articles = _evidence_article_numbers(evidence)
-        if slug == "codigo-penal-lei-38-20" and articles.intersection(allowed_penal):
-            allowed.append(evidence)
-        elif slug == "constituicao-republica-angola-2022" and articles.intersection(
-            allowed_constitutional
-        ):
-            allowed.append(evidence)
-    return allowed[:10] if allowed else official
-
-
-def _ensure_state_agent_liability_evidence(
-    question: str, official: list[RetrievalEvidence]
-) -> list[RetrievalEvidence]:
-    if not _is_state_agent_liability_query(question):
-        return official
-
-    direct_targets = (
-        ("constituicao-republica-angola-2022", ("75",), 142.0),
-        ("codigo-civil", ("483", "800"), 134.0),
-    )
-    direct: list[RetrievalEvidence] = []
-    for slug, articles, base_score in direct_targets:
-        for index, article in enumerate(articles):
-            chunk = _best_direct_article_chunk(slug, article)
-            if chunk:
-                direct.append(
-                    RetrievalEvidence(
-                        query_used=f"{question}. Artigo nuclear recuperado: {article}",
-                        chunk=chunk,
-                        score=base_score - (index * 0.5),
-                        retrieval_reason=STATE_AGENT_LIABILITY_REASON,
-                        source_bucket=_source_bucket(chunk),
-                    )
-                )
-
-    combined = _dedupe_ranked(direct + official)
-    allowed: list[RetrievalEvidence] = []
-    for evidence in combined:
-        slug = (evidence.chunk.metadata or {}).get("diploma_slug")
-        articles = _evidence_article_numbers(evidence)
-        if slug == "constituicao-republica-angola-2022" and "75" in articles:
-            allowed.append(evidence)
-        elif slug == "codigo-civil" and articles.intersection({"483", "800"}):
-            allowed.append(evidence)
-    return allowed[:6] if allowed else official
-
-
-def _ensure_civil_loan_evidence(
-    classification: LegalClassification,
-    question: str,
-    official: list[RetrievalEvidence],
-) -> list[RetrievalEvidence]:
-    if not _is_civil_loan_query(question, classification):
-        return official
-
-    direct: list[RetrievalEvidence] = []
-    for index, article in enumerate(CIVIL_LOAN_ARTICLES):
-        chunk = _best_direct_article_chunk("codigo-civil", article)
-        if chunk:
-            direct.append(
-                RetrievalEvidence(
-                    query_used=f"{question}. Artigo nuclear recuperado: {article}",
-                    chunk=chunk,
-                    score=142.0 - (index * 0.5),
-                    retrieval_reason=CIVIL_LOAN_REASON,
-                    source_bucket=_source_bucket(chunk),
-                )
-            )
-
-    combined = _dedupe_ranked(direct + official)
-    allowed: list[RetrievalEvidence] = []
-    allowed_articles = set(CIVIL_LOAN_ARTICLES)
-    for evidence in combined:
-        slug = (evidence.chunk.metadata or {}).get("diploma_slug")
-        articles = _evidence_article_numbers(evidence)
-        if slug == "codigo-civil" and articles.intersection(allowed_articles):
-            allowed.append(evidence)
-    return allowed[:8] if allowed else official
-
-
-def _ensure_admin_act_evidence(
-    classification: LegalClassification,
-    question: str,
-    official: list[RetrievalEvidence],
-) -> list[RetrievalEvidence]:
-    if not _is_admin_act_challenge_query(question, classification):
-        return official
-
-    direct: list[RetrievalEvidence] = []
-    for slug, articles, base_score in ADMIN_ACT_TARGETS:
-        for index, article in enumerate(articles):
-            chunk = _best_direct_article_chunk(slug, article)
-            if chunk:
-                direct.append(
-                    RetrievalEvidence(
-                        query_used=f"{question}. Artigo nuclear recuperado: {article}",
-                        chunk=chunk,
-                        score=base_score - (index * 0.5),
-                        retrieval_reason=ADMIN_ACT_REASON,
-                        source_bucket=_source_bucket(chunk),
-                    )
-                )
-
-    combined = _dedupe_ranked(direct + official)
-    allowed_by_slug = {
-        "lei-n-o-2-94-de-14-de-janeiro": {"9", "10", "11", "12", "13"},
-        "codigo-processo-contencioso-administrativo-33-22": {
-            "32",
-            "64",
-            "69",
-            "73",
-            "75",
-        },
-    }
-    allowed: list[RetrievalEvidence] = []
-    for evidence in combined:
-        slug = (evidence.chunk.metadata or {}).get("diploma_slug")
-        articles = _evidence_article_numbers(evidence)
-        if slug in allowed_by_slug and articles.intersection(allowed_by_slug[slug]):
-            allowed.append(evidence)
-    return allowed[:10] if allowed else official
-
-
-def _is_labor_objective_dismissal_query(
-    question: str, classification: LegalClassification
-) -> bool:
-    text = _normalize(question)
-    if classification.main_branch != "laboral" and "laboral" not in (
-        classification.branch_candidates or []
-    ):
-        if "lei geral do trabalho" not in text and "lgt" not in text:
-            return False
-    if "despedimento disciplinar" in text or "justa causa disciplinar" in text:
-        return False
-    has_dismissal = any(
-        term in text
-        for term in (
-            "despedimento",
-            "despedido",
-            "despedida",
-            "cessacao do contrato",
-            "cessação do contrato",
-        )
-    )
-    has_objective_ground = any(
-        term in text
-        for term in (
-            "extincao do posto",
-            "extinção do posto",
-            "extinguiu o posto",
-            "extinguir o posto",
-            "posto de trabalho",
-            "causas objectivas",
-            "causas objetivas",
-            "motivos economicos",
-            "motivos económicos",
-            "motivos tecnologicos",
-            "motivos tecnológicos",
-            "motivos estruturais",
-        )
-    )
-    return has_dismissal and has_objective_ground
-
-
-def _ensure_labor_objective_dismissal_evidence(
-    classification: LegalClassification,
-    question: str,
-    official: list[RetrievalEvidence],
-) -> list[RetrievalEvidence]:
-    if not _is_labor_objective_dismissal_query(question, classification):
-        return official
-
-    direct: list[RetrievalEvidence] = []
-    for index, article in enumerate(LABOR_OBJECTIVE_DISMISSAL_ARTICLES):
-        chunk = _best_direct_article_chunk(
-            "lei-geral-do-trabalho-lei-12-23", article
-        )
-        if chunk:
-            direct.append(
-                RetrievalEvidence(
-                    query_used=f"{question}. Artigo nuclear recuperado: {article}",
-                    chunk=chunk,
-                    score=150.0 - (index * 0.5),
-                    retrieval_reason=LABOR_OBJECTIVE_DISMISSAL_REASON,
-                    source_bucket=_source_bucket(chunk),
-                )
-            )
-
-    if not direct:
-        return official
-
-    combined = _dedupe_ranked(direct + official)
-    direct_ids = {item.chunk.chunk_id for item in direct}
-    ordered_direct = [item for item in combined if item.chunk.chunk_id in direct_ids]
-    remainder = [item for item in combined if item.chunk.chunk_id not in direct_ids]
-    return (ordered_direct + remainder)[:THEME_LIMIT_OFFICIAL]
 
 
 def _best_direct_article_chunk(
@@ -4668,17 +2812,61 @@ def _apply_post_filters(
     question: str,
     official: list[RetrievalEvidence],
 ) -> list[RetrievalEvidence]:
-    filtered = _apply_penal_material_postfilter(classification, question, official)
-    filtered = _ensure_public_asset_evidence(question, filtered)
-    filtered = _ensure_relationship_property_theft_evidence(question, filtered)
-    filtered = _ensure_police_detention_evidence(question, filtered)
-    filtered = _ensure_journalist_leak_evidence(question, filtered)
-    filtered = _ensure_state_agent_liability_evidence(question, filtered)
-    filtered = _ensure_civil_loan_evidence(classification, question, filtered)
-    filtered = _ensure_admin_act_evidence(classification, question, filtered)
-    return _ensure_labor_objective_dismissal_evidence(
-        classification, question, filtered
+    return official
+
+
+def _expand_dynamic_article_references(
+    evidences: list[RetrievalEvidence], limit: int = 8
+) -> list[RetrievalEvidence]:
+    additions: list[RetrievalEvidence] = []
+    seen: set[tuple[str, str]] = set()
+    for evidence in evidences[:6]:
+        metadata = evidence.chunk.metadata or {}
+        slug = metadata.get("diploma_slug")
+        if not slug:
+            continue
+        references = metadata.get("article_references") or []
+        for reference in references[:4]:
+            article = str(reference).replace(".", "").strip()
+            key = (slug, article)
+            if not article or key in seen:
+                continue
+            seen.add(key)
+            chunk = _best_direct_article_chunk(slug, article)
+            if chunk and chunk.chunk_id != evidence.chunk.chunk_id:
+                additions.append(
+                    RetrievalEvidence(
+                        query_used=evidence.query_used,
+                        chunk=chunk,
+                        score=max(1.0, evidence.score - 0.75),
+                        retrieval_reason="dynamic_cross_reference",
+                        source_bucket=_source_bucket(chunk),
+                    )
+                )
+            if len(additions) >= limit:
+                return additions
+    return additions
+
+
+async def _rerank_evidences(
+    question: str, evidences: list[RetrievalEvidence]
+) -> list[RetrievalEvidence]:
+    if len(evidences) <= 2:
+        return evidences
+    scores = await llm_reranker.scores(
+        question, [evidence.chunk.text or "" for evidence in evidences]
     )
+    rescored = [
+        RetrievalEvidence(
+            query_used=evidence.query_used,
+            chunk=evidence.chunk,
+            score=evidence.score + (scores[index] if index < len(scores) else 0.0),
+            retrieval_reason=evidence.retrieval_reason,
+            source_bucket=evidence.source_bucket,
+        )
+        for index, evidence in enumerate(evidences)
+    ]
+    return sorted(rescored, key=lambda item: item.score, reverse=True)
 
 
 
@@ -4694,6 +2882,7 @@ class LegalRetrievalService:
         conversation_diploma_names: list[str] | None = None,
     ) -> RetrievalResult:
         evidences: list[RetrievalEvidence] = []
+        query_plan = legal_query_planner.plan(question, classification)
 
         if active_document_id:
             active_chunks = document_context_service.get_relevant_chunks(
@@ -4759,6 +2948,15 @@ class LegalRetrievalService:
                 )
 
         sub_queries = _build_queries(question, classification, conversation_history)
+        existing_queries = {query.casefold() for query, _, _ in sub_queries}
+        for task in query_plan.tasks:
+            if task.query.casefold() in existing_queries:
+                continue
+            where = {"source_scope": "official"}
+            if task.branch:
+                where["legal_branch"] = task.branch
+            sub_queries.append((task.query, task.purpose, where))
+            existing_queries.add(task.query.casefold())
 
         async def _fetch_and_score(q: str, r: str, w: dict | None):
             chunks = await retriever_service.retrieve(q, where=w)
@@ -4798,18 +2996,7 @@ class LegalRetrievalService:
         )
         if concept_rescue:
             ranked = _dedupe_ranked(concept_rescue + ranked)
-        rescue_jurisprudence = _direct_jurisprudence_rescue(question, classification)
-        if rescue_jurisprudence:
-            ranked = _dedupe_ranked(rescue_jurisprudence + ranked)
         ranked = _rescore_ranked(classification, ranked)
-        if classification.topic_route == "sucessoes":
-            rescue = _successions_direct_rescue(question, classification)
-            if rescue:
-                ranked = _dedupe_ranked(rescue + ranked)
-        if classification.topic_route == "cpp":
-            rescue = _cpp_direct_rescue(question, classification)
-            if rescue:
-                ranked = _dedupe_ranked(rescue + ranked)
         # BOOST: force diploma-matched chunks to top BEFORE any filters remove them
         if classification.requested_diplomas:
             _dip_names = {_normalize(d) for d in classification.requested_diplomas}
@@ -4822,7 +3009,6 @@ class LegalRetrievalService:
                         retrieval_reason=ev.retrieval_reason,
                         source_bucket=ev.source_bucket,
                     )
-        ranked = _apply_penal_material_priority(classification, question, ranked)
         ranked = [item for item in ranked if item.score > 0.5]
 
         official = _final_official_selection(classification, ranked)
@@ -4835,6 +3021,39 @@ class LegalRetrievalService:
         official = _question_specific_branch_filter(classification, question, official)
         official = _limit_by_branch(classification, official)
         official = _prioritize_legal_concept_rescue(classification, question, official)
+        reference_evidence = _expand_dynamic_article_references(official)
+        if reference_evidence:
+            official = _dedupe_ranked(official + reference_evidence)
+
+        assessment = retrieval_quality_evaluator.assess(
+            query_plan, classification, official
+        )
+        correction_pass = 0
+        while not assessment.sufficient and correction_pass < 2:
+            correction_pass += 1
+            correction_results = await asyncio.gather(
+                *[
+                    _fetch_and_score(
+                        correction_query,
+                        "corrective_retrieval",
+                        {"source_scope": "official"},
+                    )
+                    for correction_query in assessment.correction_queries[:4]
+                ]
+            )
+            additions = [item for batch in correction_results for item in batch]
+            if not additions:
+                break
+            official = _dedupe_ranked(official + additions)
+            official = _filter_by_question_relevance(
+                classification, question, official
+            )
+            assessment = retrieval_quality_evaluator.assess(
+                query_plan, classification, official
+            )
+
+        official = await _rerank_evidences(question, official[:30])
+        official = official[:12]
         user_docs = _user_doc_selection(ranked)
         juris_docs = [
             item
@@ -4862,6 +3081,11 @@ class LegalRetrievalService:
         requested = _target_branches(classification)
         branch_groups, missing_branches = _branch_groups_from_map(branch_map, requested)
         notes = _retrieval_notes(official, missing_branches)
+        notes.append(
+            f"retrieval_quality={assessment.status}:{assessment.score:.3f}"
+        )
+        if correction_pass:
+            notes.append(f"corrective_passes={correction_pass}")
 
         prioritised_chunks = _mix_prioritized_chunks(official + juris_docs, user_docs)
         return RetrievalResult(

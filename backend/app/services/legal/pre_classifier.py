@@ -414,7 +414,7 @@ _BRANCH_KEYWORDS = [
 ]
 
 _COMPARISON_MARKERS = re.compile(
-    r"diferen[çc]a|compara[çc][aã]o|comparar|entre\s+.*\s+e\s+.*|"
+    r"diferen[çc]a|distinguir|distin[çc][aã]o|compara[çc][aã]o|comparar|entre\s+.*\s+e\s+.*|"
     r"distin[çc][aã]o|versus|\bvs\b|quais?\s+ramos|sob\s+quais?\s+ramos|"
     r"multi[-\s]?disciplinar|responsabilidade\s+(penal|civil|administrativa|disciplinar)|"
     r"protec[çc][aã]o\s+de\s+dados|prote[çc][aã]o\s+de\s+dados",
@@ -498,9 +498,15 @@ def pre_classify(question: str) -> dict:
     branch_hits = {
         _branch for _kw, _branch in _BRANCH_KEYWORDS if re.search(_kw, _q_lower)
     }
+    explicit_branch_names = {
+        branch
+        for branch in branch_hits
+        if re.search(rf"\b{re.escape(branch)}\b", _q_lower)
+    }
     if len(branch_hits) > 1:
         if (
             _COMPARISON_MARKERS.search(q)
+            or len(explicit_branch_names) > 1
             or overrides.get("needs_multi_branch_handling")
             or overrides.get("main_branch") == "misto"
         ):

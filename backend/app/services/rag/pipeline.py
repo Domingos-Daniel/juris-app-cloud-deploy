@@ -7,7 +7,6 @@ import re
 import sys
 import time as _time
 from dataclasses import asdict, replace
-from types import SimpleNamespace
 
 from cachetools import TTLCache
 from app.core.config import get_settings
@@ -106,255 +105,6 @@ def _jurisprudence_source_is_relevant(question: str, chunk: RetrievedChunk) -> b
     if not legal_tokens:
         return False
     return any(token in searchable for token in legal_tokens)
-
-
-PUBLIC_ASSET_COVERAGE_LABELS = {
-    "363": "peculato de uso, quando o funcionário usa temporariamente coisa pública para fim diferente do devido",
-    "362": "peculato, se os factos indicarem apropriação ou disposição ilegítima do bem",
-    "374": "abuso de poder, se houver abuso funcional para benefício próprio, terceiro ou dano",
-    "75": "responsabilidade civil do Estado e de pessoas colectivas públicas por actos dos seus agentes, sem afastar responsabilidade dos autores",
-    "483": "responsabilidade civil por facto ilícito, útil para enquadrar reparação de danos",
-}
-PUBLIC_ASSET_COVERAGE_ORDER = ("363", "362", "374", "75", "483")
-ADMIN_ACT_COVERAGE_LABELS = {
-    "9": "modalidades de impugnação dos actos administrativos: reclamação, recurso hierárquico e recurso contencioso",
-    "11": "objecto dos meios: reclamação/recurso hierárquico para revogação ou alteração; recurso contencioso para invalidade ou anulação",
-    "13": "prazos indicados para impugnação administrativa e recurso contencioso, quando aplicáveis ao caso",
-    "75": "início dos prazos de impugnação contenciosa e efeito dos meios graciosos sobre o prazo",
-}
-ADMIN_ACT_COVERAGE_ORDER = ("9", "11", "13", "75")
-
-
-def _is_public_asset_multi_branch_query(query: str) -> bool:
-    normalized = (query or "").casefold()
-    has_public_asset = any(
-        marker in normalized
-        for marker in (
-            "carro do estado",
-            "viatura do estado",
-            "veículo do estado",
-            "veiculo do estado",
-            "bem público",
-            "bem publico",
-            "património público",
-            "patrimonio publico",
-            "uso privado",
-            "funcionário público",
-            "funcionario publico",
-        )
-    )
-    has_consequence_context = any(
-        marker in normalized
-        for marker in (
-            "disciplinar",
-            "civil",
-            "penal",
-            "administrativ",
-            "responsabilidade",
-            "acidente",
-            "bateu",
-            "colidiu",
-            "choque",
-            "danos",
-            "o que pode acontecer",
-        )
-    )
-    return has_public_asset and has_consequence_context
-
-
-def _is_admin_act_challenge_query(query: str) -> bool:
-    normalized = (query or "").casefold()
-    return any(
-        marker in normalized
-        for marker in (
-            "reclamação",
-            "reclamacao",
-            "recurso hierárquico",
-            "recurso hierarquico",
-            "impugnação contenciosa",
-            "impugnacao contenciosa",
-            "recurso contencioso",
-            "acto administrativo",
-            "ato administrativo",
-            "decisão administrativa",
-            "decisao administrativa",
-        )
-    )
-
-
-def _is_civil_debt_proof_query(query: str) -> bool:
-    normalized = (query or "").casefold()
-    return any(
-        marker in normalized
-        for marker in (
-            "emprestei",
-            "emprestimo",
-            "empréstimo",
-            "dívida",
-            "divida",
-            "whatsapp",
-            "transferência",
-            "transferencia",
-            "provar",
-            "prova",
-            "contrato escrito",
-        )
-    )
-
-
-def _answer_article_numbers(answer: str) -> set[str]:
-    return {
-        match.group(1).replace(".", "").lstrip("0") or "0"
-        for match in re.finditer(
-            r"\bArt(?:igo|igos|\.)?\s*\.?\s*(\d+[.]?\d*)",
-            answer or "",
-            re.IGNORECASE,
-        )
-    }
-
-
-def _source_main_article(source: SourceItem) -> str:
-    value = str(getattr(source, "article_number", "") or "")
-    for part in value.split(","):
-        article = part.strip().replace(".", "")
-        if article:
-            return article
-    return ""
-
-
-def _source_citation(source: SourceItem, article: str) -> str:
-    title = normalize_legal_text(getattr(source, "title", "") or "Diploma")
-    page = getattr(source, "page", None)
-    page_text = f", p. {page}" if page else ""
-    return f"[Art. {article}, {title}{page_text}]"
-
-
-def _append_admin_act_coverage_if_needed(
-    answer: str, query: str, sources: list[SourceItem]
-) -> str:
-    if not answer or not _is_admin_act_challenge_query(query):
-        return answer
-    if "### Base administrativa essencial" in answer:
-        return answer
-
-    sanitized = re.sub(
-        r"\s*N[ãa]o est[aá] prevista no contexto fornecido,\s*mas [^.]+\.",
-        "",
-        answer,
-        flags=re.IGNORECASE,
-    )
-    sanitized = re.sub(
-        r"\s*Tamb[ée]m n[ãa]o detalhado no contexto\.",
-        "",
-        sanitized,
-        flags=re.IGNORECASE,
-    )
-    sanitized = re.sub(r"\.{2,}", ".", sanitized)
-
-    by_article: dict[str, SourceItem] = {}
-    for source in sources or []:
-        article = _source_main_article(source)
-        if article in ADMIN_ACT_COVERAGE_LABELS and article not in by_article:
-            by_article[article] = source
-    if len(by_article) < 2:
-        return sanitized
-
-    cited = _answer_article_numbers(sanitized)
-    available = [article for article in ADMIN_ACT_COVERAGE_ORDER if article in by_article]
-    missing = [article for article in available if article not in cited]
-    if not missing:
-        return sanitized
-
-    lines = [
-        "### Base administrativa essencial",
-        "Para distinguir correctamente os meios de reacção contra actos administrativos:",
-    ]
-    for article in missing[:4]:
-        source = by_article[article]
-        lines.append(
-            f"- {_source_citation(source, article)}: {ADMIN_ACT_COVERAGE_LABELS[article]}."
-        )
-    return f"{sanitized.rstrip()}\n\n" + "\n".join(lines)
-
-
-def _correct_civil_debt_burden_article(
-    answer: str, query: str, sources: list[SourceItem]
-) -> str:
-    if not answer or not _is_civil_debt_proof_query(query):
-        return answer
-    has_article_342 = any(
-        "342" in {
-            part.strip().replace(".", "")
-            for part in str(getattr(source, "article_number", "") or "").split(",")
-        }
-        for source in sources or []
-    )
-    if not has_article_342:
-        return answer
-    burden_markers = (
-        "cabe a si provar",
-        "cabe-lhe provar",
-        "quem invoca",
-        "ônus da prova",
-        "ónus da prova",
-        "onus da prova",
-    )
-    if "Art. 341" not in answer and "Art. 341.º" not in answer:
-        return answer
-    if not any(marker in answer.casefold() for marker in burden_markers):
-        return answer
-    return re.sub(
-        r"Art\.\s*341(?:\.º|º)?",
-        "Art. 342.º",
-        answer,
-        flags=re.IGNORECASE,
-    )
-
-
-def _append_public_asset_coverage_if_needed(
-    answer: str, query: str, sources: list[SourceItem]
-) -> str:
-    if not answer or not _is_public_asset_multi_branch_query(query):
-        return answer
-    if "### Artigos a ponderar" in answer:
-        return answer
-
-    by_article: dict[str, SourceItem] = {}
-    for source in sources or []:
-        article = _source_main_article(source)
-        if article in PUBLIC_ASSET_COVERAGE_LABELS and article not in by_article:
-            by_article[article] = source
-    if len(by_article) < 3:
-        return answer
-
-    cited = _answer_article_numbers(answer)
-    available = [article for article in PUBLIC_ASSET_COVERAGE_ORDER if article in by_article]
-    if len(set(available).intersection(cited)) >= min(4, len(available)):
-        return answer
-
-    missing = [article for article in available if article not in cited]
-    if not missing:
-        return answer
-
-    if "363" in missing:
-        lines = [
-            "### Nota importante",
-            "Para uso temporário de carro do Estado, o primeiro artigo a testar é o **Art. 363.º (peculato de uso)**. O Art. 362.º só entra se houver apropriação ou disposição ilegítima do bem.",
-            "",
-            "### Artigos a ponderar",
-            "Para enquadrar melhor o caso, devem ser conferidos:",
-        ]
-    else:
-        lines = [
-            "### Artigos a ponderar",
-            "Para enquadrar melhor o caso, devem ser conferidos:",
-        ]
-    for article in missing[:5]:
-        source = by_article[article]
-        lines.append(
-            f"- {_source_citation(source, article)}: {PUBLIC_ASSET_COVERAGE_LABELS[article]}."
-        )
-    return f"{answer.rstrip()}\n\n" + "\n".join(lines)
 
 
 def _apply_deterministic_context_override(query: str, classification):
@@ -768,6 +518,7 @@ from app.services.legal.models import (
 )
 from app.services.legal.reranker import llm_reranker
 from app.services.llm.router import llm_router
+from app.services.legal.evidence_verifier import evidence_verifier
 from app.services.rag.query_expander import query_expander
 from app.services.rag.vector_store import legislation_vector_store
 
@@ -1059,32 +810,62 @@ def _clarification_enriched_query(query: str, clarification_context: dict | None
     )
 
 
-def _clarification_repeats_previous(classification, clarification_context: dict | None) -> bool:
+def _clarification_repeats_previous(
+    classification,
+    clarification_context: dict | None,
+) -> bool:
     if not clarification_context or not classification.clarification_prompts:
         return False
-    previous = normalize_legal_text(str(clarification_context.get("question") or "")).casefold().strip(" .?!")
-    current = normalize_legal_text(classification.clarification_prompts[0].question).casefold().strip(" .?!")
+    previous = normalize_legal_text(
+        str(clarification_context.get("question") or "")
+    ).casefold().strip(" .?!")
+    current = normalize_legal_text(
+        classification.clarification_prompts[0].question
+    ).casefold().strip(" .?!")
     return bool(previous and current and previous == current)
 
 
-def _progressive_clarification_prompt(clarification_context: dict | None) -> ClarificationPrompt | None:
+def _progressive_clarification_prompt(
+    clarification_context: dict | None,
+) -> ClarificationPrompt | None:
     if not clarification_context:
         return None
-    original = normalize_legal_text(str(clarification_context.get("original_question") or "")).casefold()
-    previous = normalize_legal_text(str(clarification_context.get("question") or "")).casefold()
-    answer = normalize_legal_text(str(clarification_context.get("answer") or "")).casefold()
+    original = normalize_legal_text(
+        str(clarification_context.get("original_question") or "")
+    ).casefold()
+    previous = normalize_legal_text(
+        str(clarification_context.get("question") or "")
+    ).casefold()
+    answer = normalize_legal_text(
+        str(clarification_context.get("answer") or "")
+    ).casefold()
     if len(original.split()) > 8 or not any(term in previous for term in ("area", "área")):
         return None
     if "trabalho" in answer:
-        return _clarification_prompt("O que aconteceu concretamente na relação de trabalho?", ["Fui despedido", "Não recebi salário ou outros valores", "Tive um acidente de trabalho", "É outra situação laboral"])
+        return _clarification_prompt(
+            "O que aconteceu concretamente na relação de trabalho?",
+            ["Fui despedido", "Não recebi salário ou outros valores", "Tive um acidente de trabalho", "É outra situação laboral"],
+        )
     if any(term in answer for term in ("criminal", "crime", "policia", "polícia")):
-        return _clarification_prompt("Qual é a situação criminal ou policial que pretende analisar?", ["Fui detido ou chamado pela polícia", "Fui vítima de um crime", "Fui acusado de um crime", "É outra situação penal"])
+        return _clarification_prompt(
+            "Qual é a situação criminal ou policial que pretende analisar?",
+            ["Fui detido ou chamado pela polícia", "Fui vítima de um crime", "Fui acusado de um crime", "É outra situação penal"],
+        )
     if any(term in answer for term in ("familia", "família", "patrimonio", "património")):
-        return _clarification_prompt("Qual é o conflito familiar ou patrimonial principal?", ["Divórcio ou união", "Guarda ou alimentos de filhos", "Herança", "Bens, dívida ou propriedade"])
-    return _clarification_prompt("O que aconteceu concretamente e o que pretende resolver?", ["Quero conhecer os meus direitos", "Quero recuperar um valor ou bem", "Quero contestar uma decisão", "Prefiro escrever os detalhes"])
+        return _clarification_prompt(
+            "Qual é o conflito familiar ou patrimonial principal?",
+            ["Divórcio ou união", "Guarda ou alimentos de filhos", "Herança", "Bens, dívida ou propriedade"],
+        )
+    return _clarification_prompt(
+        "O que aconteceu concretamente e o que pretende resolver?",
+        ["Quero conhecer os meus direitos", "Quero recuperar um valor ou bem", "Quero contestar uma decisão", "Prefiro escrever os detalhes"],
+    )
 
 
-def _apply_progressive_clarification(classification, clarification_context: dict | None) -> None:
+def _apply_progressive_clarification(
+    classification,
+    clarification_context: dict | None,
+) -> None:
     prompt = _progressive_clarification_prompt(clarification_context)
     if not prompt:
         return
@@ -1630,7 +1411,9 @@ class RAGPipeline:
         normalized_query = (query or "").strip()
         if not normalized_query:
             raise ValueError("A pergunta não pode estar vazia.")
-        analysis_query = _clarification_enriched_query(normalized_query, clarification_context)
+        analysis_query = _clarification_enriched_query(
+            normalized_query, clarification_context
+        )
         effective_query = (
             f"{analysis_query}\n\n{query_context.strip()}"
             if query_context and query_context.strip()
@@ -1702,7 +1485,9 @@ class RAGPipeline:
             )
 
         if classification.needs_clarification:
-            _ensure_clarification_prompts(normalized_query, classification, history, chat_state)
+            _ensure_clarification_prompts(
+                normalized_query, classification, history, chat_state
+            )
             if _clarification_repeats_previous(classification, clarification_context):
                 classification.needs_clarification = False
                 classification.clarifying_questions = []
@@ -1790,7 +1575,8 @@ class RAGPipeline:
                 )
             clarification_request = (
                 classification.clarification_prompts[0].model_dump()
-                if classification.clarification_prompts else None
+                if classification.clarification_prompts
+                else None
             )
             if clarification_request is not None:
                 clarification_request["original_question"] = (
@@ -1962,19 +1748,16 @@ class RAGPipeline:
             retrieval = self._filter_retrieval_by_branch(retrieval, classification)
             retrieval = self._force_requested_article_evidence(retrieval, classification)
 
-            has_curated_direct_evidence = any(
+            has_verified_direct_evidence = any(
                 getattr(ev, "retrieval_reason", "")
                 in {
-                    "labor_objective_dismissal_direct_article",
-                    "journalist_public_interest_direct_article",
-                    "public_asset_direct_article",
-                    "state_agent_liability_direct_article",
-                    "civil_loan_direct_article",
-                    "admin_act_direct_article",
+                    "requested_article_direct",
+                    "dynamic_cross_reference",
+                    "legal_concept_rescue",
                 }
                 for ev in retrieval.official_evidence
             )
-            if len(retrieval.retrieved_chunks) > 10 and not has_curated_direct_evidence:
+            if len(retrieval.retrieved_chunks) > 10 and not has_verified_direct_evidence:
                 chunk_texts = [chunk.text or "" for chunk in retrieval.retrieved_chunks]
                 relevance = await llm_reranker.rerank(
                     normalized_query,
@@ -2445,11 +2228,6 @@ class RAGPipeline:
         answer = _normalize_brackets(answer)
         answer = _personalize_pro_answer(answer, query_context)
         answer = _pro_case_source_fallback(answer, query_context, sources)
-        answer = _append_public_asset_coverage_if_needed(
-            answer, normalized_query, sources
-        )
-        answer = _append_admin_act_coverage_if_needed(answer, normalized_query, sources)
-        answer = _correct_civil_debt_burden_article(answer, normalized_query, sources)
         _tpp = _time.time() - _tpp
         logger.info("LLM:%.1fs postproc:%.1fs", _tllm, _tpp)
 
@@ -2497,11 +2275,28 @@ class RAGPipeline:
             answer = re.sub(r"```json\s*\{.*?\}\s*```", "", answer, flags=re.DOTALL)
 
         answer = _normalize_brackets(answer)
-        answer = _append_public_asset_coverage_if_needed(
-            answer, normalized_query, sources
+        answer, verification_report = evidence_verifier.verify_and_guard(
+            answer,
+            normalized_query,
+            retrieval.official_evidence + retrieval.user_evidence,
+            retrieval.retrieval_notes,
         )
-        answer = _append_admin_act_coverage_if_needed(answer, normalized_query, sources)
-        answer = _correct_civil_debt_burden_article(answer, normalized_query, sources)
+        if verification_report.negative_claim_guarded:
+            validation.issues.append(
+                ValidationIssue(
+                    code="unsupported_negative_conclusion",
+                    message=verification_report.unsupported_claims[0],
+                    severity="high",
+                )
+            )
+        elif verification_report.unsupported_claims:
+            validation.issues.append(
+                ValidationIssue(
+                    code="claim_support_gap",
+                    message=f"{len(verification_report.unsupported_claims)} afirmação(ões) não ficaram directamente suportadas pelas fontes selecionadas.",
+                    severity="medium",
+                )
+            )
 
         if not current_chat_id:
             current_chat_id = postgres_manager.create_chat(
@@ -2605,7 +2400,9 @@ class RAGPipeline:
         before committing to a full RAG pipeline call.
         """
         normalized_query = query.strip()
-        analysis_query = _clarification_enriched_query(normalized_query, clarification_context)
+        analysis_query = _clarification_enriched_query(
+            normalized_query, clarification_context
+        )
         effective_query = (
             f"{analysis_query}\n\n{query_context.strip()}"
             if query_context and query_context.strip()
@@ -2656,7 +2453,9 @@ class RAGPipeline:
             )
 
         if classification.needs_clarification:
-            _ensure_clarification_prompts(normalized_query, classification, history, chat_state)
+            _ensure_clarification_prompts(
+                normalized_query, classification, history, chat_state
+            )
             if _clarification_repeats_previous(classification, clarification_context):
                 classification.needs_clarification = False
                 classification.clarifying_questions = []
@@ -2710,14 +2509,22 @@ class RAGPipeline:
         )
 
         preflight = await self.preflight_classify(
-            query, provider, conversation_history, chat_id, user_id, query_context, clarification_context
+            query,
+            provider,
+            conversation_history,
+            chat_id,
+            user_id,
+            query_context,
+            clarification_context,
         )
         if preflight.get("needs_clarification") and not active_document_id:
             log.info("query is vague, returning clarifying mode: %s", query[:80])
             current_chat_id = chat_id
             if not current_chat_id:
                 current_chat_id = postgres_manager.create_chat(
-                    title=query.strip(), active_document_id=active_document_id, user_id=user_id
+                    title=query.strip(),
+                    active_document_id=active_document_id,
+                    user_id=user_id,
                 )
             clarification_request = preflight.get("clarification_request") or {}
             clarification_request["original_question"] = (
@@ -2789,7 +2596,9 @@ class RAGPipeline:
         import json as _json
 
         normalized_query = (query or "").strip()
-        analysis_query = _clarification_enriched_query(normalized_query, clarification_context)
+        analysis_query = _clarification_enriched_query(
+            normalized_query, clarification_context
+        )
         effective_query = (
             f"{analysis_query}\n\n{query_context.strip()}"
             if query_context and query_context.strip()
@@ -2874,7 +2683,9 @@ class RAGPipeline:
             )
 
         if classification.needs_clarification:
-            _ensure_clarification_prompts(normalized_query, classification, history, chat_state)
+            _ensure_clarification_prompts(
+                normalized_query, classification, history, chat_state
+            )
             if _clarification_repeats_previous(classification, clarification_context):
                 classification.needs_clarification = False
                 classification.clarifying_questions = []
@@ -2901,7 +2712,8 @@ class RAGPipeline:
                         "clarifying_questions": classification.clarifying_questions,
                         "clarification_request": (
                             classification.clarification_prompts[0].model_dump()
-                            if classification.clarification_prompts else None
+                            if classification.clarification_prompts
+                            else None
                         ),
                         "answer": clarifying_answer,
                         "done": True,
@@ -3024,10 +2836,12 @@ class RAGPipeline:
 
         yield (
             "data: "
-            + _json.dumps({
-                "phase": "evaluating",
-                "status": "A avaliar a relevância e a autoridade das fontes encontradas.",
-            })
+            + _json.dumps(
+                {
+                    "phase": "evaluating",
+                    "status": "A avaliar a relevância e a autoridade das fontes encontradas.",
+                }
+            )
             + "\n\n"
         )
 
@@ -3180,10 +2994,12 @@ class RAGPipeline:
         # --- Phase 4: validate, compose, persist ---
         yield (
             "data: "
-            + _json.dumps({
-                "phase": "verifying",
-                "status": "A verificar os artigos citados e a consistência da resposta.",
-            })
+            + _json.dumps(
+                {
+                    "phase": "verifying",
+                    "status": "A verificar os artigos citados e a consistência da resposta.",
+                }
+            )
             + "\n\n"
         )
         _t_post_start = _time.perf_counter()
@@ -3213,8 +3029,13 @@ class RAGPipeline:
             )
         verified_articles = []
         to_verify = [
-            (item.article or "", self._basis_slug_from_retrieval(item, retrieval), item.page)
-            for item in validation.confirmed_legal_basis + validation.prudential_legal_basis
+            (
+                item.article or "",
+                self._basis_slug_from_retrieval(item, retrieval),
+                item.page,
+            )
+            for item in validation.confirmed_legal_basis
+            + validation.prudential_legal_basis
             if item.article and self._basis_slug_from_retrieval(item, retrieval)
         ]
         if to_verify:
@@ -3225,20 +3046,25 @@ class RAGPipeline:
             except asyncio.TimeoutError:
                 logger.info("Article verification timed out in stream finalization")
             unverified = [
-                item for item in verified_articles
+                item
+                for item in verified_articles
                 if item.status not in {"confirmed", "confirmed_in_text"}
             ]
             if unverified:
-                validation.issues.append(ValidationIssue(
-                    code="unverified_article",
-                    message=f"{len(unverified)} artigo(s) citados não foram confirmados no corpus indexado.",
-                    severity="high",
-                ))
-                validation = validation.model_copy(update={
-                    "answer_mode": "limited",
-                    "sufficient_legal_support": False,
-                    "issues": validation.issues,
-                })
+                validation.issues.append(
+                    ValidationIssue(
+                        code="unverified_article",
+                        message=f"{len(unverified)} artigo(s) citados não foram confirmados no corpus indexado.",
+                        severity="high",
+                    )
+                )
+                validation = validation.model_copy(
+                    update={
+                        "answer_mode": "limited",
+                        "sufficient_legal_support": False,
+                        "issues": validation.issues,
+                    }
+                )
                 answer_draft = legal_composer.fallback_from_validation(
                     validation, original_draft=answer_draft
                 )
@@ -3292,11 +3118,28 @@ class RAGPipeline:
         answer = _normalize_brackets(answer)
         answer = _personalize_pro_answer(answer, query_context)
         answer = _pro_case_source_fallback(answer, query_context, sources)
-        answer = _append_public_asset_coverage_if_needed(
-            answer, normalized_query, sources
+        answer, verification_report = evidence_verifier.verify_and_guard(
+            answer,
+            normalized_query,
+            retrieval.official_evidence + retrieval.user_evidence,
+            retrieval.retrieval_notes,
         )
-        answer = _append_admin_act_coverage_if_needed(answer, normalized_query, sources)
-        answer = _correct_civil_debt_burden_article(answer, normalized_query, sources)
+        if verification_report.negative_claim_guarded:
+            validation.issues.append(
+                ValidationIssue(
+                    code="unsupported_negative_conclusion",
+                    message=verification_report.unsupported_claims[0],
+                    severity="high",
+                )
+            )
+        elif verification_report.unsupported_claims:
+            validation.issues.append(
+                ValidationIssue(
+                    code="claim_support_gap",
+                    message=f"{len(verification_report.unsupported_claims)} afirmação(ões) não ficaram directamente suportadas pelas fontes selecionadas.",
+                    severity="medium",
+                )
+            )
 
         if not current_chat_id:
             current_chat_id = postgres_manager.create_chat(
@@ -3670,30 +3513,12 @@ class RAGPipeline:
             ]
             if strict_evidence:
                 base_evidence = strict_evidence
-        has_curated_direct_evidence = any(
-            getattr(evidence, "retrieval_reason", "")
-            in {
-                "labor_objective_dismissal_direct_article",
-                "journalist_public_interest_direct_article",
-                "public_asset_direct_article",
-                "state_agent_liability_direct_article",
-                "civil_loan_direct_article",
-                "admin_act_direct_article",
-            }
-            for evidence in base_evidence
-        )
         source_limit = (
             12
-            if has_curated_direct_evidence
-            else
-            8
             if getattr(classification, "needs_multi_branch_handling", False)
             or getattr(classification, "main_branch", "") == "misto"
-            else 5
+            else 8
         )
-        source_query_text = getattr(classification, "query_text", "") or ""
-        if _is_admin_act_challenge_query(source_query_text):
-            source_limit = max(source_limit, 10)
         if _query_requests_user_document_only(retrieval.classification.query_text):
             user_only_evidence = [
                 evidence
@@ -3769,100 +3594,6 @@ class RAGPipeline:
             )
             if len(selected) >= source_limit:
                 break
-        query_norm = (getattr(classification, "query_text", "") or "").casefold()
-        is_public_asset_query = any(
-            marker in query_norm
-            for marker in (
-                "carro do estado",
-                "viatura do estado",
-                "veículo do estado",
-                "veiculo do estado",
-                "bem público",
-                "bem publico",
-                "património público",
-                "patrimonio publico",
-                "uso privado",
-                "funcionário público",
-                "funcionario publico",
-            )
-        )
-        if is_public_asset_query:
-            try:
-                from app.services.legal.retrieval import _ensure_public_asset_evidence
-
-                direct_sources = _source_items_from_evidence(
-                    _ensure_public_asset_evidence(
-                        getattr(classification, "query_text", "") or "", []
-                    ),
-                    limit=12,
-                )
-                combined_sources: list[SourceItem] = []
-                combined_seen: set[tuple[str, int | None, str, str | None]] = set()
-                for source in direct_sources:
-                    key = (
-                        source.title,
-                        source.page,
-                        source.source_scope,
-                        source.article_number,
-                    )
-                    if key in combined_seen:
-                        continue
-                    combined_seen.add(key)
-                    combined_sources.append(source)
-                for source in selected:
-                    key = (
-                        source.title,
-                        source.page,
-                        source.source_scope,
-                        source.article_number,
-                    )
-                    if key in combined_seen:
-                        continue
-                    combined_seen.add(key)
-                    combined_sources.append(source)
-                    if len(combined_sources) >= source_limit:
-                        break
-                if combined_sources:
-                    selected = combined_sources[:source_limit]
-            except Exception as exc:
-                logger.warning("Failed to append public asset direct sources: %s", exc)
-        admin_query = _is_admin_act_challenge_query(
-            getattr(classification, "query_text", "") or ""
-        )
-        has_admin_reaction_sources = any(
-            _source_main_article(source) in {"9", "11", "13"}
-            for source in selected
-        )
-        if admin_query and not has_admin_reaction_sources:
-            try:
-                from app.services.legal.retrieval import _ensure_admin_act_evidence
-
-                direct_sources = _source_items_from_evidence(
-                    _ensure_admin_act_evidence(
-                        SimpleNamespace(
-                            main_branch="administrativo",
-                            branch_candidates=["administrativo"],
-                        ),
-                        getattr(classification, "query_text", "") or "",
-                        [],
-                    ),
-                    limit=12,
-                )
-                for source in direct_sources:
-                    key = (
-                        source.title,
-                        source.page,
-                        source.source_scope,
-                        source.article_number,
-                    )
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    selected.append(source)
-                    if len(selected) >= source_limit:
-                        break
-            except Exception as exc:
-                logger.warning("Failed to append admin direct sources: %s", exc)
         return selected
 
     @staticmethod

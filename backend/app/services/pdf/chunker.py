@@ -13,7 +13,48 @@ ARTICLE_BLOCK_RE = re.compile(
     r"(?is)(art(?:\.|igo)?\s*\d+[.ºo°]*\s*[-–—:]?.*?)(?=(?:\n\s*art(?:\.|igo)?\s*\d+[.ºo°]*\s*[-–—:]?)|\Z)"
 )
 ARTICLE_HEADER_RE = re.compile(r"art(?:\.|igo)?\s*(\d+[.]?\d*)", re.IGNORECASE)
-SECTION_MARKER_RE = re.compile(r"(?im)^\s*(cap[íi]tulo|sec[cç][aã]o|subsec[cç][aã]o|divis[aã]o|subdivis[aã]o|t[íi]tulo)\b.*$")
+SECTION_MARKER_RE = re.compile(
+    r"(?im)^\s*(?P<kind>livro|parte|t[íi]tulo|cap[íi]tulo|sec[cç][aã]o|subsec[cç][aã]o|divis[aã]o|subdivis[aã]o)\b(?P<label>.*)$"
+)
+
+HIERARCHY_KEYS = {
+    "livro": "book",
+    "parte": "part",
+    "titulo": "title",
+    "capitulo": "chapter",
+    "seccao": "section",
+    "subseccao": "subsection",
+    "divisao": "division",
+    "subdivisao": "subdivision",
+}
+
+
+def _ascii_key(value: str) -> str:
+    import unicodedata
+
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFKD", value.casefold())
+        if not unicodedata.combining(character)
+    )
+
+
+def update_hierarchy(text: str, hierarchy: dict[str, str] | None = None) -> dict[str, str]:
+    current = dict(hierarchy or {})
+    for match in SECTION_MARKER_RE.finditer(text or ""):
+        key = HIERARCHY_KEYS.get(_ascii_key(match.group("kind")))
+        if key:
+            label = match.group("label").strip()
+            if not label or re.fullmatch(r"[IVXLCDM\d.º°-]+", label, re.IGNORECASE):
+                remainder = (text or "")[match.end() :]
+                next_line = next(
+                    (line.strip() for line in remainder.splitlines() if line.strip()),
+                    "",
+                )
+                if next_line and not ARTICLE_HEADER_RE.search(next_line):
+                    label = f"{label} {next_line}".strip()
+            current[key] = f"{match.group('kind').strip()} {label}".strip()
+    return current
 
 
 def chunk_text(text: str, min_words: int | None = None, max_words: int | None = None) -> list[str]:
@@ -65,7 +106,9 @@ def semantic_chunk_text(text: str) -> list[str]:
     return [chunk.strip() for chunk in splitter.split_text(text) if chunk.strip()]
 
 
-def legal_semantic_chunks(text: str) -> list[dict]:
+def legal_semantic_chunks(
+    text: str, inherited_hierarchy: dict[str, str] | None = None
+) -> list[dict]:
     cleaned = (text or "").strip()
     if not cleaned:
         return []
@@ -73,25 +116,30 @@ def legal_semantic_chunks(text: str) -> list[dict]:
     article_blocks = [match.group(1).strip() for match in ARTICLE_BLOCK_RE.finditer(cleaned) if match.group(1).strip()]
     if article_blocks:
         chunks: list[dict] = []
-        for block in article_blocks:
+        matches = [match for match in ARTICLE_BLOCK_RE.finditer(cleaned) if match.group(1).strip()]
+        for match, block in zip(matches, article_blocks, strict=False):
             header = ARTICLE_HEADER_RE.search(block)
             article_main = header.group(1).replace(".", "") if header else None
+            hierarchy = update_hierarchy(cleaned[: match.start()], inherited_hierarchy)
             chunks.append(
                 {
                     "text": block,
                     "article_main": article_main,
                     "segmentation": "article_block",
+                    "hierarchy": hierarchy,
+                    "parent_context": " > ".join(hierarchy.values()),
                 }
             )
         return chunks
 
-    section_lines = SECTION_MARKER_RE.findall(cleaned)
+    section_lines = list(SECTION_MARKER_RE.finditer(cleaned))
     if section_lines:
         return [
             {
                 "text": chunk,
                 "article_main": ARTICLE_HEADER_RE.search(chunk).group(1).replace(".", "") if ARTICLE_HEADER_RE.search(chunk) else None,
                 "segmentation": "semantic_fallback",
+                "hierarchy": update_hierarchy(cleaned, inherited_hierarchy),
             }
             for chunk in semantic_chunk_text(cleaned)
         ]
@@ -101,6 +149,7 @@ def legal_semantic_chunks(text: str) -> list[dict]:
             "text": chunk,
             "article_main": ARTICLE_HEADER_RE.search(chunk).group(1).replace(".", "") if ARTICLE_HEADER_RE.search(chunk) else None,
             "segmentation": "plain_fallback",
+            "hierarchy": dict(inherited_hierarchy or {}),
         }
         for chunk in semantic_chunk_text(cleaned)
     ]

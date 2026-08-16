@@ -12,6 +12,7 @@ from app.services.legal.models import (
     LLMAnswerDraft,
     ValidationResult,
 )
+from app.services.legal.query_planner import legal_query_planner
 from app.services.legal.text_normalization import normalize_legal_text
 
 
@@ -605,6 +606,7 @@ class LegalComposer:
         professional_context: bool = False,
     ) -> str:
         context_blocks: list[str] = []
+        query_plan = legal_query_planner.plan(question, classification)
         prefs = ai_preferences or {}
         if isinstance(prefs, str):
             try:
@@ -692,12 +694,27 @@ class LegalComposer:
                     str(article_main).split(",")[0].strip().replace(".", "")
                 )
             article_label = f"Art. {article_main}" if article_main and article_main != 'N/D' else f"Ref: {chunk.title[:40]}"
+            hierarchy = meta.get("parent_context") or " > ".join(
+                (meta.get("hierarchy") or {}).values()
+            )
             context_blocks.append(
                 f"### [{article_label}] — {chunk.title} (p. {chunk.page or 'N/D'})\n"
                 f"Tipo: {source_type} | Ramo: {branch} | Artigos: {chunk.article_number or 'N/D'}"
-                f"{' | [PODE CONTER MULTIPLOS ARTIGOS]' if chunk.source_scope == 'user_upload' else ''}\n"
+                f"{' | [PODE CONTER MULTIPLOS ARTIGOS]' if chunk.source_scope == 'user_upload' else ''}"
+                f"{' | Hierarquia: ' + hierarchy if hierarchy else ''}\n"
                 f"{chunk.text[:1500]}"
             )
+
+        issue_plan_text = "\n".join(
+            f"- Questão {index}: {issue}"
+            for index, issue in enumerate(query_plan.issues, start=1)
+        )
+        evidence_matrix_text = "\n".join(
+            f"- Fonte {index}: artigo={((chunk.metadata or {}).get('article_main') or chunk.article_number or 'N/D')}; "
+            f"diploma={chunk.title}; ramo={(chunk.metadata or {}).get('legal_branch', 'indeterminado')}; "
+            f"hierarquia={(chunk.metadata or {}).get('parent_context', '') or 'N/D'}"
+            for index, chunk in enumerate(ordered, start=1)
+        )
 
         whitelist = sorted({item for item in allowed_articles if item})
         whitelist_text = (
@@ -823,41 +840,8 @@ class LegalComposer:
             else ""
         )
         pro_case_guidance = _build_pro_case_guidance(question)
-        journalism_guidance = _build_public_interest_journalism_guidance(
-            question, classification
-        )
+        journalism_guidance = ""
         labor_dismissal_guidance = ""
-        if (
-            classification.main_branch == "laboral"
-            and "desped" in question_norm
-            and any(
-                marker in question_norm
-                for marker in (
-                    "requisitos",
-                    "válido",
-                    "valido",
-                    "direitos",
-                    "lícito",
-                    "licito",
-                    "ilícito",
-                    "ilicito",
-                    "posto de trabalho",
-                    "causas objectivas",
-                    "causas objetivas",
-                )
-            )
-        ):
-            labor_dismissal_guidance = (
-                "=== GUIA DE COBERTURA — DESPEDIMENTO LABORAL ===\n"
-                "Quando a pergunta pedir requisitos, validade, direitos, despedimento licito/ilicito ou artigos aplicaveis:\n"
-                "1. Comeca por enquadrar a modalidade juridica exacta se o contexto permitir.\n"
-                "2. Separa requisitos materiais, procedimento formal, direitos no despedimento licito e consequencias do despedimento ilicito.\n"
-                "3. Verifica no inventario artigos sobre fundamentos, procedimento, aviso previo, criterios de preferencia, compensacao, nulidade/ilicitude, reintegracao/indemnizacao e prazo de impugnacao.\n"
-                "4. Nao omitas condicoes, limites ou excepcoes expressas no artigo. Se um direito so existe em certas circunstancias, menciona essa condicao.\n"
-                "5. Nao digas que a compensacao ou um ponto 'nao esta detalhado' se houver artigo confirmado no contexto sobre calculo, compensacao, indemnizacao ou antiguidade.\n"
-                "6. Mantem linguagem simples, mas completa; evita resposta minimalista quando o utilizador pediu varios subpontos.\n"
-                "=== FIM DO GUIA LABORAL ===\n\n"
-            )
         multi_branch_reasoning_guidance = ""
         if (
             classification.main_branch == "misto"
@@ -874,69 +858,8 @@ class LegalComposer:
                 "=== FIM DO GUIA MULTI-RAMO ===\n\n"
             )
         public_asset_guidance = ""
-        if is_public_asset_multi_branch:
-            public_asset_guidance = (
-                "=== GUIA DE COBERTURA — BEM PUBLICO / FUNCIONARIO PUBLICO ===\n"
-                "Esta pergunta exige cobertura minima por frentes, mesmo que as preferencias do utilizador pecam resposta breve.\n"
-                "Nao respondas apenas com um crime. Se o contexto contiver os artigos correspondentes, distingue:\n"
-                "- Penal: peculato de uso quando ha uso temporario de coisa publica para fim diferente; peculato se houver apropriacao; abuso de poder se houver abuso funcional para beneficio/dano. Se os Arts. 363, 362 e 374 estiverem na whitelist, cita-os expressamente e explica a diferenca em frases curtas.\n"
-                "- Civil/constitucional: danos ao Estado e a terceiros, incluindo eventual responsabilidade do Estado por actos dos seus agentes e direito de regresso quando sustentado no contexto. Se os Arts. 75 da Constituicao e 483 do Codigo Civil estiverem na whitelist, cita-os expressamente.\n"
-                "- Administrativo/disciplinar: averiguacao, processo disciplinar, regras internas de uso do bem e recolha de prova.\n"
-                "Obrigatorio: cada frente juridica tratada deve ter pelo menos uma base legal citada, se houver fonte confirmada na whitelist. Nao basta citar apenas o Art. 363.\n"
-                "Formula conclusoes condicionais quando faltarem factos: autorizacao de uso, ligacao funcional, culpa no acidente, danos e participacao de terceiros.\n"
-                "=== FIM DO GUIA BEM PUBLICO ===\n\n"
-            )
         civil_debt_guidance = ""
-        if classification.main_branch == "civil" and any(
-            marker in question_norm
-            for marker in (
-                "emprestei",
-                "emprestimo",
-                "empréstimo",
-                "dívida",
-                "divida",
-                "whatsapp",
-                "transferência",
-                "transferencia",
-                "provar",
-                "prova",
-            )
-        ):
-            civil_debt_guidance = (
-                "=== GUIA DE COBERTURA — DIVIDA / PROVA CIVIL ===\n"
-                "Se a pergunta for sobre provar uma divida ou emprestimo sem contrato escrito:\n"
-                "- Art. 342 do Codigo Civil corresponde ao onus da prova: quem invoca o direito deve provar os factos constitutivos.\n"
-                "- Art. 362 do Codigo Civil corresponde a prova documental.\n"
-                "- Nao atribuas o onus da prova ao Art. 341; esse artigo e sobre funcao das provas.\n"
-                "- Explica que transferencias e mensagens podem ajudar como prova documental, mas a força probatoria depende da autenticidade, contexto e contraditorio.\n"
-                "=== FIM DO GUIA DIVIDA CIVIL ===\n\n"
-            )
         admin_act_guidance = ""
-        if classification.main_branch == "administrativo" and any(
-            marker in question_norm
-            for marker in (
-                "reclamação",
-                "reclamacao",
-                "recurso hierárquico",
-                "recurso hierarquico",
-                "impugnação contenciosa",
-                "impugnacao contenciosa",
-                "acto administrativo",
-                "ato administrativo",
-                "decisão administrativa",
-                "decisao administrativa",
-            )
-        ):
-            admin_act_guidance = (
-                "=== GUIA DE COBERTURA — IMPUGNACAO ADMINISTRATIVA ===\n"
-                "Se a pergunta comparar reclamacao, recurso hierarquico e impugnacao contenciosa:\n"
-                "- Se a Lei n.o 2/94 estiver no contexto, NAO digas que reclamacao ou recurso hierarquico nao estao previstos no contexto.\n"
-                "- Art. 9 da Lei n.o 2/94: modalidades de impugnacao dos actos administrativos: reclamacao, recurso hierarquico e recurso contencioso.\n"
-                "- Art. 11 da Lei n.o 2/94: reclamacao/recurso hierarquico visam revogacao ou alteracao; recurso contencioso visa invalidade/anulacao.\n"
-                "- Art. 13 da Lei n.o 2/94: prazos de 30 dias para reclamacao/recurso hierarquico e 60 dias para recurso contencioso, se confirmado no contexto.\n"
-                "- Usa o Codigo de Processo do Contencioso Administrativo para legitimidade, forma de processo e inicio/suspensao de prazos judiciais.\n"
-                "=== FIM DO GUIA ADMINISTRATIVO ===\n\n"
-            )
         compact_chat_guidance = (
             ""
             if professional_context
@@ -969,7 +892,7 @@ class LegalComposer:
             "=== REGRA FUNDAMENTAL DE VERIFICACAO DE CONTEXTO ===\n"
             "ANTES de afirmares que um artigo, diploma ou informacao 'nao foi encontrado', 'nao consta' ou 'nao esta disponivel', FAZ O SEGUINTE:\n"
             "1. Verifica o INVENTARIO DO CONTEXTO no final do prompt — lista TODOS os artigos e diplomas disponiveis.\n"
-            "2. Procura o numero do artigo nos cabecalhos de cada chunk (ex: '### [Art. 417]').\n"
+            "2. Procura o numero do artigo nos cabecalhos de cada chunk (ex: '### [Art. X]').\n"
             "3. Le o texto do chunk correspondente antes de concluir que nao existe.\n"
             "4. No Codigo Penal angolano, o crime-base usa apenas o nome (ex: 'Burla' = burla simples, 'Furto' = furto simples, 'Roubo' = roubo simples). A ausencia da palavra 'simples' NAO significa que o artigo nao foi encontrado.\n"
             "5. So digas 'nao encontrado' se, apos verificar TODOS os itens acima, o artigo ou informacao realmente nao estiver presente.\n"
@@ -1016,13 +939,16 @@ class LegalComposer:
             "2. SE O CONTEXTO NAO CONFIRMAR O PONTO EXACTO, DIZ ISSO EXPRESSAMENTE. Podes explicar o limite do material recuperado, mas nao inventes resposta normativa.\n"
             "3. NUNCA INVENTES artigos, numeros, custos, prazos, orgaos competentes ou formulas do tipo 'em geral'.\n"
             "4. COBERTURA COMPLETA: responde a pergunta com o que o contexto efectivamente permite afirmar. Se houver lacuna, identifica a lacuna.\n"
-            "5. CITACOES: Sempre que mencionares um artigo sustentado no contexto, escreve a referencia EXACTAMENTE neste formato (COM colchetes): [[Art. X, Diploma Y, p. Z]]. Exemplo: [[Art. 300.o, Lei Geral do Trabalho, p. 155]]. O sistema converte para apresentacao visual.\n"
+            "5. CITACOES: Sempre que mencionares um artigo sustentado no contexto, escreve a referencia EXACTAMENTE neste formato (COM colchetes): [[Art. X, Diploma Y, p. Z]]. O sistema converte para apresentacao visual.\n"
             "6. SEM REDUNDANCIA: nao facas listas finais de fontes; o sistema mostra isso na interface.\n"
             "7. RECUPERACAO E APOLOGIA: se for uma CORRECCAO, inicia a rich_content com um pedido de desculpas profissional.\n"
             "8. ESTILO: Portugues de Angola, formal, claro e proporcional a complexidade.\n"
             "9. CITACOES: Usa o formato [[Art. X, Diploma Y, p. Z]]. NUNCA uses parenteses ou outros caracteres no lugar dos colchetes.\n"
             "10. SO PREENCHES cited_articles com artigos confirmados na whitelist abaixo.\n"
             "11. FORMATO PADRAO SUGERIDO: '### Resposta' e, se necessario, '### O que fazer'. Evita secoes redundantes.\n"
+            "12. MATRIZ JURIDICA: antes de redigir, relaciona internamente cada questão com regra, fonte, pressupostos, aplicação aos factos, excepções e lacunas.\n"
+            "13. CONCLUSÕES NEGATIVAS: não concluas que um direito, competência ou norma não existe apenas porque não apareceu numa fonte genérica. Uma negativa categórica exige exclusão normativa expressa; caso contrário, assinala insuficiência da pesquisa.\n"
+            "14. APLICABILIDADE: não basta o artigo conter palavras semelhantes; explica por que os pressupostos normativos correspondem aos factos.\n"
             "\n"
             f"{prefs_guidance}"
             f"{length_guidance}"
@@ -1042,6 +968,11 @@ class LegalComposer:
             f"Ramo: {classification.main_branch} | Audiencia efectiva: {audience} | Topico: {classification.topic_route}\n"
             f"Pergunta do utilizador: {question}\n"
             f"Historico resumido: {history}\n\n"
+            "--- PLANO DINAMICO DE QUESTOES JURIDICAS ---\n"
+            f"{issue_plan_text}\n"
+            "--- MATRIZ DE EVIDENCIAS CANDIDATAS ---\n"
+            f"{evidence_matrix_text}\n"
+            "--- FIM DO PLANO E MATRIZ ---\n\n"
             "--- INVENTARIO DO CONTEXTO RECUPERADO ---\n"
             "Artigos e diplomas disponiveis (verifica esta lista ANTES de dizer que algo nao foi encontrado):\n"
             f"{inventory_text}\n"

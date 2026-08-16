@@ -24,7 +24,7 @@ from app.services.pdf.article_refs import (
     extract_article_references as _extract_article_references,
     primary_article_number as _primary_article_number,
 )
-from app.services.pdf.chunker import legal_semantic_chunks
+from app.services.pdf.chunker import legal_semantic_chunks, update_hierarchy
 from app.services.pdf.extractor import (
     extract_pages_from_pdf,
     extract_pages_from_pdf_range,
@@ -815,6 +815,8 @@ def _normalize_segmented_chunk(page_text: str, chunk_payload: dict) -> dict:
         "article_references": _extract_article_references(chunk_text),
         "segmentation": segmentation,
         "page_is_context_heavy": _is_context_heavy_page(page_text),
+        "hierarchy": chunk_payload.get("hierarchy") or {},
+        "parent_context": chunk_payload.get("parent_context") or "",
     }
 
 
@@ -841,6 +843,8 @@ def _metadata_from_segment(
     metadata["article_references"] = normalized_chunk["article_references"]
     metadata["segmentation"] = normalized_chunk["segmentation"]
     metadata["page_is_context_heavy"] = normalized_chunk["page_is_context_heavy"]
+    metadata["hierarchy"] = normalized_chunk.get("hierarchy") or {}
+    metadata["parent_context"] = normalized_chunk.get("parent_context") or ""
     metadata["chunk_priority"] = _chunk_priority(
         article_main, normalized_chunk["segmentation"]
     )
@@ -881,10 +885,12 @@ def _official_chunk_payload(
     return {"id": chunk_id, "text": chunk_text, "metadata": metadata}
 
 
-def _page_chunks(page_text: str) -> list[dict]:
+def _page_chunks(
+    page_text: str, inherited_hierarchy: dict[str, str] | None = None
+) -> list[dict]:
     return [
         _normalize_segmented_chunk(page_text, item)
-        for item in legal_semantic_chunks(page_text)
+        for item in legal_semantic_chunks(page_text, inherited_hierarchy)
     ]
 
 
@@ -1164,6 +1170,7 @@ class LegislationIngestionService:
         ocr_pages = 0
         chunks_payload: list[dict] = []
         law_status = _infer_law_status(pdf_path.name, document["title"])
+        document_hierarchy: dict[str, str] = {}
 
         for page_info in pages:
             page_number = page_info["page"]
@@ -1174,7 +1181,7 @@ class LegislationIngestionService:
             if page_used_ocr:
                 ocr_pages += 1
             for chunk_index, normalized_chunk in enumerate(
-                _page_chunks(page_text), start=1
+                _page_chunks(page_text, document_hierarchy), start=1
             ):
                 chunks_payload.append(
                     _official_chunk_payload(
@@ -1187,6 +1194,7 @@ class LegislationIngestionService:
                         law_status=law_status,
                     )
                 )
+            document_hierarchy = update_hierarchy(page_text, document_hierarchy)
 
         chunk_count = await vector_store.upsert_documents(chunks_payload)
         logger.info(

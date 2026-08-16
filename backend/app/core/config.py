@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     postgres_dsn: str = ""
     postgres_schema: str = "public"
-    pgvector_enabled: bool = True
+    pgvector_enabled: bool = False
     raw_pdfs_path: str = str(BASE_DIR / "data" / "raw_pdfs")
     processed_path: str = str(BASE_DIR / "data" / "processed")
 
@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     chunk_size: int = 1800
     chunk_overlap: int = 220
     retrieval_k: int = 10
+    retrieval_candidate_k: int = 50
+    retrieval_rrf_rank_constant: int = 60
+    retrieval_max_correction_passes: int = 2
+    reranker_enabled: bool = False
+    reranker_model: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+    reranker_top_n: int = 12
     max_context_chars: int = 12000
     request_timeout_seconds: float = 90.0
     pdf_text_min_chars_for_ocr_skip: int = 80

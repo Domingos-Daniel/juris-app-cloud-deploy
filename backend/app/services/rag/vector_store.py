@@ -17,11 +17,15 @@ class LegislationVectorStore:
         embeddings = await embedding_service.embed_texts(texts)
         enriched = []
         for item, vector in zip(items, embeddings):
+            metadata = {
+                **item["metadata"],
+                **embedding_service.vector_metadata(vector),
+            }
             enriched.append(
                 {
                     "id": item["id"],
                     "text": item["text"],
-                    "metadata": item["metadata"],
+                    "metadata": metadata,
                     "embedding": vector,
                 }
             )

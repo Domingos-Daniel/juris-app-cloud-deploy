@@ -48,7 +48,6 @@ CPP_CORE_TERMS = (
 )
 CPP_RESOURCE_TERMS = ("recurso", "prazo")
 PENAL_MATERIAL_SLUG = "codigo-penal-lei-38-20"
-PENAL_MATERIAL_ARTICLES = {"362", "363", "374", "417", "418", "426", "406", "399", "468"}
 PENAL_MATERIAL_TERMS = (
     "burla",
     "infidelidade",
@@ -65,21 +64,6 @@ PENAL_MATERIAL_TERMS = (
     "enriquecimento ilícito",
     "enriquecimento ilicito",
 )
-PENAL_DIRECT_QUERY_TERMS = {
-    "burla": {"417", "418"},
-    "infidelidade": {"426"},
-    "peculato": {"362", "363"},
-    "peculato de uso": {"363"},
-    "abuso de poder": {"374"},
-    "carro do estado": {"362", "363"},
-    "viatura do estado": {"362", "363"},
-    "veiculo do estado": {"362", "363"},
-    "bem publico": {"362", "363", "374"},
-    "bens publicos": {"362", "363", "374"},
-    "patrimonio do estado": {"362", "363", "374"},
-    "patrimonio publico": {"362", "363", "374"},
-    "uso privado": {"363"},
-}
 
 
 def _normalize(text: str) -> str:
@@ -530,13 +514,15 @@ def _answer_mode(
         or "processual_specificity_gap" in issue_codes
         or "branch_mismatch" in issue_codes
     ):
-        return "grounded_with_caveat"
+        return "limited"
     if sufficient_legal_support and confirmed:
         return "grounded"
     return "grounded_with_caveat"
 
 
-def _is_material_penal_chunk(chunk) -> bool:
+def _is_material_penal_chunk(
+    classification: LegalClassification, chunk
+) -> bool:
     if _chunk_branch(chunk) != "penal":
         return True
     text = _normalize(chunk.text)
@@ -558,9 +544,18 @@ def _is_material_penal_chunk(chunk) -> bool:
         return False
     if not refs or len(refs) > 3:
         return False
-    if any(ref in PENAL_MATERIAL_ARTICLES for ref in refs):
-        return True
-    return any(token in text for token in PENAL_MATERIAL_TERMS)
+    if not (bool(metadata.get("is_normative")) or any(
+        token in text for token in PENAL_MATERIAL_TERMS
+    )):
+        return False
+    query_terms = {
+        token
+        for token in re.findall(r"[a-zà-ÿ]{4,}", _normalize(classification.query_text))
+        if token not in {"direito", "penal", "laboral", "pode", "quando", "como", "distinguir"}
+    }
+    return sum(term in text for term in query_terms) >= min(
+        2, max(1, len(query_terms) // 4)
+    )
 
 
 def _question_requires_cpp_specificity(
@@ -725,27 +720,19 @@ def _numeric_claims_supported_in_cpp_context(
     return any(number in context_text for number in answer_numbers)
 
 
-def _required_penal_articles_for_query(classification: LegalClassification) -> set[str]:
-    if classification.topic_route != "penal_substantivo":
-        return set()
-    haystack = _normalize(classification.query_text)
-    required: set[str] = set()
-    for term, articles in PENAL_DIRECT_QUERY_TERMS.items():
-        if term in haystack:
-            required.update(articles)
-    return required
-
-
 def _penal_substantivo_matches_query(
     classification: LegalClassification, confirmed: list[ValidatedLegalBasisItem]
 ) -> bool:
-    required_articles = _required_penal_articles_for_query(classification)
-    if not required_articles:
+    if classification.topic_route != "penal_substantivo" or not confirmed:
         return True
-    confirmed_articles = {
-        str(item.article).replace(".", "") for item in confirmed if item.article
+    query_terms = {
+        token
+        for token in re.findall(r"[a-zà-ÿ]{4,}", _normalize(classification.query_text))
+        if token not in {"artigo", "codigo", "código", "direito", "penal", "pode", "qual", "sobre"}
     }
-    return bool(confirmed_articles.intersection(required_articles))
+    context = " ".join(item.excerpt or "" for item in confirmed).casefold()
+    overlap = sum(term in context for term in query_terms)
+    return overlap >= min(2, max(1, len(query_terms) // 4))
 
 
 class LegalValidationService:
@@ -881,7 +868,7 @@ class LegalValidationService:
             classification.main_branch == "misto"
             and any(branch == "penal" for branch in classification.branch_candidates)
             and not any(
-                _is_material_penal_chunk(evidence.chunk)
+                _is_material_penal_chunk(classification, evidence.chunk)
                 for evidence in retrieval.official_evidence
                 if _chunk_branch(evidence.chunk) == "penal"
             )
