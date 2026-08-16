@@ -7,7 +7,11 @@ from app.services.legal.models import LegalClassification
 
 
 TOKEN_RE = re.compile(r"[\wÀ-ÿ-]+", re.UNICODE)
-CLAUSE_RE = re.compile(r"(?:[?;]|\b(?:e ainda|bem como|além disso|alem disso)\b)", re.IGNORECASE)
+CLAUSE_RE = re.compile(
+    r"(?:[?;]|(?<=[a-záéíóúâêôãõç])\.\s+(?=[A-ZÁÉÍÓÚÂÊÔÃÕÇ])|"
+    r"\b(?:e ainda|bem como|além disso|alem disso)\b)",
+    re.IGNORECASE,
+)
 STOPWORDS = {
     "a", "ao", "aos", "as", "como", "com", "da", "das", "de", "do", "dos",
     "e", "ela", "ele", "em", "entre", "essa", "esse", "esta", "este", "eu",

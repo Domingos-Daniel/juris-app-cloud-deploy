@@ -377,6 +377,35 @@ _LEIGO_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_EXPLICIT_DIPLOMA_ALIASES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\b(?:c[oó]digo\s+(?:do\s+)?processo\s+penal|cpp|ccp)\b", re.I), "Código do Processo Penal"),
+    (re.compile(r"\b(?:c[oó]digo\s+penal)\b", re.I), "Código Penal"),
+    (re.compile(r"\b(?:lei\s+geral\s+do\s+trabalho|lgt)\b", re.I), "Lei Geral do Trabalho"),
+    (re.compile(r"\b(?:constitui[çc][aã]o\s+(?:da\s+rep[uú]blica\s+de\s+angola|angolana)|cra)\b", re.I), "Constituição da República de Angola"),
+    (re.compile(r"\b(?:c[oó]digo\s+civil)\b", re.I), "Código Civil"),
+    (re.compile(r"\b(?:c[oó]digo\s+(?:da\s+)?fam[ií]lia)\b", re.I), "Código da Família"),
+    (re.compile(r"\b(?:lei\s+de\s+terras)\b", re.I), "Lei de Terras"),
+    (re.compile(r"\b(?:lei\s+das\s+sociedades\s+comerciais|lsc)\b", re.I), "Lei das Sociedades Comerciais"),
+    (re.compile(r"\b(?:c[oó]digo\s+geral\s+tribut[aá]rio|cgt)\b", re.I), "Código Geral Tributário"),
+)
+
+
+def _explicit_requested_diplomas(question: str) -> list[str]:
+    requested = [
+        diploma
+        for pattern, diploma in _EXPLICIT_DIPLOMA_ALIASES
+        if pattern.search(question)
+    ]
+    law_reference = re.compile(
+        r"(?:Lei|Decreto(?:[\s-]Lei)?)\s+(?:n\S*\s+)?\d+\s*[/\-]\s*\d{2,4}",
+        re.IGNORECASE,
+    )
+    requested.extend(
+        re.sub(r"\s+", " ", match.group(0)).strip()
+        for match in law_reference.finditer(question)
+    )
+    return list(dict.fromkeys(requested))
+
 
 TRANSFORMATION_PATTERNS: list[tuple[str, dict]] = [
     (
@@ -440,6 +469,7 @@ def pre_classify(question: str) -> dict:
     """
     q = question.strip()
     overrides: dict = {}
+    matched_legal_pattern = False
     article_numbers = extract_requested_article_numbers(q)
     if article_numbers:
         overrides["requested_article_numbers"] = article_numbers
@@ -454,6 +484,7 @@ def pre_classify(question: str) -> dict:
     for pattern, fields in DIPLOMA_PATTERNS:
         if re.search(pattern, q, re.IGNORECASE):
             overrides.update(fields)
+            matched_legal_pattern = True
             break  # Primeiro match ganha (ordenados por especificidade)
 
     # 2. Detectar audiência
@@ -518,7 +549,7 @@ def pre_classify(question: str) -> dict:
             overrides["branch_candidates"] = sorted(branch_hits)
             overrides["force_main_branch"] = True
             overrides["force_topic_route"] = True
-        else:
+        elif not matched_legal_pattern:
             overrides.pop("force_main_branch", None)
             overrides.pop("force_topic_route", None)
 
@@ -561,6 +592,11 @@ def apply_pre_classification(classification_data: dict, question: str) -> dict:
     if "requested_diplomas" in overrides:
         if overrides.get("force_main_branch") or not merged.get("requested_diplomas"):
             merged["requested_diplomas"] = overrides["requested_diplomas"]
+
+    # A classificação pode inferir o ramo, mas nunca deve fingir que o utilizador
+    # pediu um diploma. O filtro estrito e os boosts documentais só são seguros
+    # quando o nome ou uma abreviatura inequívoca aparece na própria pergunta.
+    merged["requested_diplomas"] = _explicit_requested_diplomas(question)
 
     if "requested_article_numbers" in overrides:
         existing_articles = merged.get("requested_article_numbers") or []
