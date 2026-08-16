@@ -2316,16 +2316,34 @@ def _generic_official_selection(
         candidates.append(evidence)
 
     if question:
+        ranking_noise = {
+            "administrativo",
+            "administrativa",
+            "analisar",
+            "analise",
+            "civil",
+            "disciplinar",
+            "estado",
+            "juridico",
+            "jurídico",
+            "penal",
+            "publico",
+            "público",
+            "responsabilidade",
+            "responsabilidades",
+        }
         query_stems = {
             _concept_search_stem(token)
-            for token in _query_tokens(question)
-            if len(token) >= 4
+            for token in WORD_RE.findall(_normalize(question))
+            if len(token) >= 3
+            and token not in STOPWORDS
+            and token not in ranking_noise
         }
 
         def relevance(evidence: RetrievalEvidence) -> float:
             text = _normalize(evidence.chunk.text)
             overlap = sum(stem in text for stem in query_stems if stem)
-            return evidence.score + min(9.0, overlap * 0.9)
+            return evidence.score + min(12.0, overlap * 1.8)
 
         candidates.sort(key=relevance, reverse=True)
 
@@ -2354,8 +2372,22 @@ def _generic_official_selection(
                 for evidence in candidates
                 if _chunk_branch(evidence.chunk) == branch
             ]
-            for evidence in branch_items[:branch_quota]:
+            dense_anchors = sorted(
+                (
+                    evidence
+                    for evidence in branch_items
+                    if evidence.chunk.distance is not None
+                ),
+                key=lambda evidence: float(evidence.chunk.distance),
+            )[:2]
+            branch_selected = 0
+            for evidence in [*dense_anchors, *branch_items]:
+                if evidence.chunk.chunk_id in seen:
+                    continue
                 add(evidence)
+                branch_selected += 1
+                if branch_selected >= branch_quota:
+                    break
 
     for evidence in candidates:
         if evidence.retrieval_reason in protected_reasons:
