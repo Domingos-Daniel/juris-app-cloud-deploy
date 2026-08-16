@@ -162,12 +162,9 @@ def _apply_deterministic_context_override(query: str, classification):
         branch_candidates.extend(classification.branch_candidates or [])
     updates["branch_candidates"] = _unique_preserve_order(branch_candidates)
 
-    requested_diplomas = [*(pre.get("requested_diplomas") or [])]
-    if not has_context_branch:
-        requested_diplomas.extend(classification.requested_diplomas or [])
-    elif not requested_diplomas:
-        requested_diplomas.extend(classification.requested_diplomas or [])
-    updates["requested_diplomas"] = _unique_preserve_order(requested_diplomas)
+    updates["requested_diplomas"] = _unique_preserve_order(
+        classification.requested_diplomas or []
+    )
 
     requested_articles = [*(pre.get("requested_article_numbers") or [])]
     if not has_context_branch:
@@ -1246,14 +1243,17 @@ class RAGPipeline:
             marker in normalized_query for marker in FOLLOW_UP_DIPLOMA_MARKERS
         )
         requested_articles = list(classification.requested_article_numbers)
-        if not requested_articles and anchor_article and anchor_article not in requested_articles:
+        if (
+            not requested_articles
+            and anchor_article
+            and (classification.is_follow_up or same_diploma_reference)
+            and anchor_article not in requested_articles
+        ):
             requested_articles.append(anchor_article)
 
         requested_diplomas = list(classification.requested_diplomas)
-        if anchor_diploma and same_diploma_reference:
+        if anchor_diploma and (same_diploma_reference or classification.is_follow_up):
             requested_diplomas = [anchor_diploma]
-        elif anchor_diploma and anchor_diploma not in requested_diplomas:
-            requested_diplomas.append(anchor_diploma)
 
         requires_strict = classification.requires_strict_corpus_match
         if requested_articles or any(
@@ -1529,21 +1529,6 @@ class RAGPipeline:
                         classification.branch_candidates
                     ) + [branch]
                     break
-
-            # Inject secondary branch diplomas into requested_diplomas
-            from app.services.legal.retrieval import BRANCH_DIPLOMAS as _BD
-
-            for branch in classification.branch_candidates:
-                if branch == classification.main_branch:
-                    continue
-                branch_diplomas = _BD.get(branch, tuple())
-                for diploma_name in branch_diplomas:
-                    if diploma_name not in classification.requested_diplomas:
-                        classification.requested_diplomas = list(
-                            classification.requested_diplomas
-                        ) + [diploma_name]
-                        break
-                break
 
         # Follow-up questions with short queries — use latest user question for retrieval
         search_query = self._derive_search_query(
