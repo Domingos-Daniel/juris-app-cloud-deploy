@@ -2239,6 +2239,7 @@ def _dedupe_ranked(ranked: list[RetrievalEvidence]) -> list[RetrievalEvidence]:
     reason_priority = {
         "requested_article_direct": 7,
         "legal_concept_rescue": 6,
+        "semantic_plan": 6,
         "original": 5,
         "base": 5,
         "decomposed_issue": 5,
@@ -2525,6 +2526,8 @@ def _score_chunk(
         score += 2.2
     elif retrieval_reason == "topic_route":
         score += 3.0
+    elif retrieval_reason == "semantic_plan":
+        score += 3.5
 
     return score
 
@@ -2702,6 +2705,9 @@ def _build_queries(
         queries.append((normalized, reason, where))
 
     add(question, "base", {"source_scope": "official"})
+    planned_query = (classification.search_query or "").strip()
+    if planned_query and _normalize(planned_query) != _normalize(question):
+        add(planned_query, "semantic_plan", {"source_scope": "official"})
 
     route_hint = TOPIC_ROUTE_QUERY_HINTS.get(classification.topic_route)
     if route_hint:

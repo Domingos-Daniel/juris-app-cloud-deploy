@@ -1727,7 +1727,7 @@ class RAGPipeline:
                 )
             else:
                 retrieval = await legal_retrieval_service.retrieve(
-                    classification.search_query or normalized_query,
+                    normalized_query,
                     classification,
                     conversation_history=history,
                     active_document_id=active_document_id,
@@ -2817,7 +2817,7 @@ class RAGPipeline:
                 )
             else:
                 retrieval = await legal_retrieval_service.retrieve(
-                    classification.search_query or normalized_query,
+                    normalized_query,
                     classification,
                     conversation_history=history,
                     active_document_id=active_document_id,
@@ -3606,14 +3606,23 @@ class RAGPipeline:
         query_terms = {
             token[:7]
             for token in re.findall(r"[\wÀ-ÿ-]+", (question or "").casefold())
-            if len(token) >= 5
+            if len(token) >= 3
             and token
             not in {
+                "administrativo",
+                "administrativa",
                 "analise",
+                "analisar",
                 "avaliar",
                 "avaliação",
+                "civil",
+                "disciplinar",
+                "estado",
                 "jurídico",
                 "juridico",
+                "penal",
+                "publico",
+                "público",
                 "responsabilidade",
                 "responsabilidades",
             }

@@ -248,7 +248,11 @@ class LegalClassifier:
             "Só marque needs_clarification quando faltar um dado indispensável. "
             "Nesse caso, devolva no máximo uma pergunta ligada aos factos apresentados, "
             "com 2-4 respostas concretas. Se a pergunta já puder ser pesquisada com segurança, "
-            "use needs_clarification=false e clarifying_questions=[].\n\n"
+            "use needs_clarification=false e clarifying_questions=[].\n"
+            "Em search_query, converte os factos em termos de pesquisa jurídica: inclui institutos, "
+            "nomes técnicos de possíveis tipos legais, tipos de responsabilidade e conceitos plausíveis "
+            "que devam ser verificados no corpus. Não te limites a repetir a pergunta. "
+            "Não inventes números de artigos nem apresentes a hipótese como conclusão.\n\n"
             f"Historico:\n{history_text}\n\n"
             f"Pergunta: {question}"
         )
@@ -257,16 +261,12 @@ class LegalClassifier:
         pre_overrides = pre_classify(question)
         if pre_overrides:
             logger.debug("pre_classify: overrides detectados %s", pre_overrides)
-            if (
-                pre_overrides.get("force_main_branch")
-                and pre_overrides.get("force_topic_route")
-                and (
-                    pre_overrides.get("needs_clarification")
-                    or pre_overrides.get("requested_diplomas")
-                    or pre_overrides.get("requested_article_numbers")
-                )
+            deterministic = apply_pre_classification({}, question)
+            if deterministic.get("needs_clarification") or (
+                deterministic.get("requested_article_numbers")
+                and deterministic.get("requested_diplomas")
             ):
-                data = apply_pre_classification({}, question)
+                data = deterministic
                 return _build_classification(question, data, semantic_confidence)
 
         answer = ""
