@@ -56,13 +56,20 @@ class EvidenceVerifier:
         if not answer.strip():
             return answer, ClaimVerificationReport(supported=False)
 
+        answer, removed_citations = self._remove_unverified_article_claims(
+            answer, evidences
+        )
+
         quality_sufficient = any(
             note.startswith("retrieval_quality=sufficient")
             for note in (retrieval_notes or [])
         )
         has_negative_claim = bool(NEGATIVE_CLAIM_RE.search(answer))
         negative_supported = self._negative_supported(question, evidences)
-        unsupported_claims = self._unsupported_claims(answer, evidences)
+        unsupported_claims = [
+            *removed_citations,
+            *self._unsupported_claims(answer, evidences),
+        ]
         if has_negative_claim and (not quality_sufficient or not negative_supported):
             guarded = self._guard_negative_answer(evidences)
             return guarded, ClaimVerificationReport(
@@ -77,6 +84,50 @@ class EvidenceVerifier:
             supported=not unsupported_claims,
             unsupported_claims=unsupported_claims,
         )
+
+    @staticmethod
+    def _remove_unverified_article_claims(
+        answer: str, evidences: list[RetrievalEvidence]
+    ) -> tuple[str, list[str]]:
+        available_articles: set[str] = set()
+        for evidence in evidences:
+            metadata = evidence.chunk.metadata or {}
+            values = [
+                metadata.get("article_main"),
+                evidence.chunk.article_number,
+                *(metadata.get("article_references") or []),
+            ]
+            available_articles.update(
+                str(value).replace(".", "").strip()
+                for value in values
+                if value is not None and str(value).strip()
+            )
+
+        removed: list[str] = []
+        kept_blocks: list[str] = []
+        for block in re.split(r"(\n\s*\n)", answer):
+            if not block.strip() or re.fullmatch(r"\n\s*\n", block):
+                kept_blocks.append(block)
+                continue
+            cited = {
+                match.group(1).replace(".", "")
+                for match in ARTICLE_CITATION_RE.finditer(block)
+            }
+            missing = cited - available_articles
+            if missing:
+                removed.append(
+                    f"Citação sem evidência recuperada: {', '.join(sorted(missing))}."
+                )
+                continue
+            kept_blocks.append(block)
+
+        cleaned = "".join(kept_blocks).strip()
+        if removed:
+            cleaned += (
+                "\n\n> **Nota de verificação:** Foram omitidas referências numéricas que "
+                "não estavam confirmadas nas fontes recuperadas."
+            )
+        return cleaned, removed
 
     @staticmethod
     def _unsupported_claims(

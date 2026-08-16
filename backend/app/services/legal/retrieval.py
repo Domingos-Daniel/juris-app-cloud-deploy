@@ -1387,28 +1387,37 @@ def _prioritize_legal_concept_rescue(
     if not concept_items:
         return official
 
-    concept_ids = {item.chunk.chunk_id for item in concept_items}
-    selected = sorted(concept_items, key=lambda item: item.score, reverse=True)
+    selected: list[RetrievalEvidence] = []
+    seen: set[str] = set()
 
-    if _needs_jurisprudence_query(question, classification):
-        selected.extend(
-            item
-            for item in official
-            if item.chunk.chunk_id not in concept_ids
-            and (item.chunk.metadata or {}).get("document_kind") == "jurisprudence"
-            and _jurisprudence_relevant_to_question(question, item.chunk)
-        )
+    branch_quota = 3 if classification.needs_multi_branch_handling else 1
+    for branch in _target_branches(classification):
+        branch_items = [
+            item for item in official if _chunk_branch(item.chunk) == branch
+        ][:branch_quota]
+        for branch_item in branch_items:
+            if branch_item.chunk.chunk_id in seen:
+                continue
+            selected.append(branch_item)
+            seen.add(branch_item.chunk.chunk_id)
 
-    if len(selected) < 2:
-        selected.extend(
-            item
-            for item in official
-            if item.chunk.chunk_id not in {entry.chunk.chunk_id for entry in selected}
-            and item.retrieval_reason in {"requested_article_direct", "article"}
-            and _chunk_relevant_to_question(classification, question, item.chunk)
-        )
+    ranked = sorted(
+        official,
+        key=lambda item: (
+            item.retrieval_reason == "legal_concept_rescue",
+            item.score,
+        ),
+        reverse=True,
+    )
+    for item in ranked:
+        if item.chunk.chunk_id in seen:
+            continue
+        selected.append(item)
+        seen.add(item.chunk.chunk_id)
+        if len(selected) >= THEME_LIMIT_OFFICIAL:
+            break
 
-    return selected[:THEME_LIMIT_OFFICIAL] or official
+    return selected or official[:THEME_LIMIT_OFFICIAL]
 
 
 def _limit_by_branch(
@@ -1423,16 +1432,24 @@ def _limit_by_branch(
         if branch not in {"misto", "indeterminado"}
     ]
     per_branch_limit = max(1, THEME_LIMIT_OFFICIAL // max(1, len(target_branches)))
-    branch_counts: dict[str, int] = {branch: 0 for branch in target_branches}
+    seen: set[str] = set()
+    for branch in target_branches:
+        for item in official:
+            if _chunk_branch(item.chunk) != branch:
+                continue
+            if item.chunk.chunk_id in seen:
+                continue
+            selected.append(item)
+            seen.add(item.chunk.chunk_id)
+            if sum(_chunk_branch(entry.chunk) == branch for entry in selected) >= per_branch_limit:
+                break
     for item in official:
-        branch = _chunk_branch(item.chunk)
-        if branch in branch_counts and branch_counts[branch] >= per_branch_limit:
-            continue
-        selected.append(item)
-        if branch in branch_counts:
-            branch_counts[branch] += 1
         if len(selected) >= THEME_LIMIT_OFFICIAL:
             break
+        if item.chunk.chunk_id in seen:
+            continue
+        selected.append(item)
+        seen.add(item.chunk.chunk_id)
     return selected or official[:THEME_LIMIT_OFFICIAL]
 
 
@@ -2219,10 +2236,34 @@ def _source_key(evidence: RetrievalEvidence) -> tuple[str, int | None, str, str,
 
 def _dedupe_ranked(ranked: list[RetrievalEvidence]) -> list[RetrievalEvidence]:
     deduped: dict[tuple[str, int | None, str, str, str], RetrievalEvidence] = {}
+    reason_priority = {
+        "requested_article_direct": 7,
+        "legal_concept_rescue": 6,
+        "original": 5,
+        "base": 5,
+        "decomposed_issue": 5,
+        "corrective_retrieval": 4,
+        "branch_issue": 3,
+        "diploma": 2,
+        "article": 2,
+        "branch": 1,
+        "topic_route": 1,
+    }
     for evidence in ranked:
         key = _source_key(evidence)
         current = deduped.get(key)
-        if current is None or evidence.score > current.score:
+        evidence_priority = reason_priority.get(evidence.retrieval_reason, 0)
+        current_priority = (
+            reason_priority.get(current.retrieval_reason, 0) if current else -1
+        )
+        if (
+            current is None
+            or evidence_priority > current_priority
+            or (
+                evidence_priority == current_priority
+                and evidence.score > current.score
+            )
+        ):
             deduped[key] = evidence
     return sorted(deduped.values(), key=lambda item: item.score, reverse=True)
 
@@ -2240,6 +2281,75 @@ def _final_official_selection(
     official = _rank_official_after_filters(classification, official)
     official = _prune_low_value_official(official)
     return official
+
+
+def _generic_official_selection(
+    classification: LegalClassification,
+    ranked: list[RetrievalEvidence],
+    *,
+    limit: int = THEME_LIMIT_OFFICIAL,
+) -> list[RetrievalEvidence]:
+    """Select official evidence without scenario or article-specific rules."""
+    protected_reasons = {
+        "requested_article_direct",
+        "legal_concept_rescue",
+        "dynamic_cross_reference",
+        "corrective_retrieval",
+    }
+    requested_slugs = _requested_diploma_slugs(classification)
+    candidates: list[RetrievalEvidence] = []
+    for evidence in _dedupe_ranked(ranked):
+        if evidence.source_bucket != "official" or evidence.score <= 0.5:
+            continue
+        if (
+            classification.requires_strict_corpus_match
+            and requested_slugs
+            and not _strict_diploma_match(classification, evidence.chunk)
+        ):
+            continue
+        if (
+            evidence.retrieval_reason not in protected_reasons
+            and _is_overly_generic_chunk(evidence.chunk)
+        ):
+            continue
+        candidates.append(evidence)
+
+    if not candidates:
+        return []
+
+    requested_branches = [
+        branch
+        for branch in _target_branches(classification)
+        if branch not in {"misto", "indeterminado"}
+    ]
+    selected: list[RetrievalEvidence] = []
+    seen: set[str] = set()
+
+    def add(evidence: RetrievalEvidence) -> None:
+        if evidence.chunk.chunk_id in seen or len(selected) >= limit:
+            return
+        selected.append(evidence)
+        seen.add(evidence.chunk.chunk_id)
+
+    for evidence in candidates:
+        if evidence.retrieval_reason in protected_reasons:
+            add(evidence)
+
+    if requested_branches:
+        branch_quota = max(2, limit // len(requested_branches))
+        for branch in requested_branches:
+            branch_items = [
+                evidence
+                for evidence in candidates
+                if _chunk_branch(evidence.chunk) == branch
+            ]
+            for evidence in branch_items[:branch_quota]:
+                add(evidence)
+
+    for evidence in candidates:
+        add(evidence)
+
+    return selected[:limit]
 
 
 def _branch_group_source(
@@ -2678,6 +2788,10 @@ def _concept_chunk_score(
         score += 18.0
     phrase_tokens = [token for token in WORD_RE.findall(phrase_norm) if token not in STOPWORDS]
     score += sum(2.0 for token in phrase_tokens if _concept_search_stem(token) in text)
+    question_overlap = sum(
+        1 for token in _query_tokens(question) if _concept_search_stem(token) in text
+    )
+    score += min(12.0, question_overlap * 1.5)
 
     if (chunk.metadata or {}).get("segmentation") == "article_block":
         score += 6.0
@@ -2714,20 +2828,16 @@ def _direct_legal_concept_rescue(
                source_scope, document_id, metadata, text_content
         FROM legal_segments
         WHERE source_scope = 'official'
-          AND (%s::text IS NULL OR legal_branch = %s)
+          AND (%s::text[] IS NULL OR legal_branch = ANY(%s))
           AND (
                 text_content ILIKE %s
                 OR title ILIKE %s
                 OR lower(coalesce(metadata->>'article_main', '')) = lower(%s)
               )
         ORDER BY page ASC, article_number ASC
-        LIMIT 10
+        LIMIT 120
     """
-    branch_filter = (
-        classification.main_branch
-        if classification.main_branch not in {"misto", "indeterminado"}
-        else None
-    )
+    branch_filters = _target_branches(classification) or None
     try:
         with postgres_manager.connection() as conn, conn.cursor() as cur:
             for phrase in phrases:
@@ -2735,20 +2845,20 @@ def _direct_legal_concept_rescue(
                 cur.execute(
                     sql,
                     (
-                        branch_filter,
-                        branch_filter,
+                        branch_filters,
+                        branch_filters,
                         f"%{search_term}%",
                         f"%{search_term}%",
                         phrase,
                     ),
                 )
-                candidates: list[RetrievalEvidence] = []
+                candidates_by_branch: dict[str, list[RetrievalEvidence]] = defaultdict(list)
                 for row in cur.fetchall():
                     chunk = postgres_manager._segment_to_chunk(row)
                     score = _concept_chunk_score(chunk, phrase, question)
                     if score < 75.0:
                         continue
-                    candidates.append(
+                    candidates_by_branch[_chunk_branch(chunk)].append(
                         RetrievalEvidence(
                             query_used=f"{question}. Conceito jurídico no corpus: {phrase}",
                             chunk=chunk,
@@ -2757,13 +2867,14 @@ def _direct_legal_concept_rescue(
                             source_bucket=_source_bucket(chunk),
                         )
                     )
-                candidates.sort(key=lambda item: item.score, reverse=True)
-                rescued.extend(candidates[:1])
+                for candidates in candidates_by_branch.values():
+                    candidates.sort(key=lambda item: item.score, reverse=True)
+                    rescued.extend(candidates[:1])
     except Exception as exc:
         logger.warning("Dynamic legal concept rescue failed: %s", exc)
         return []
 
-    return _dedupe_ranked(rescued)[:6]
+    return _dedupe_ranked(rescued)[:10]
 
 
 
@@ -3000,11 +3111,19 @@ class LegalRetrievalService:
                 RetrievalEvidence(
                     query_used=q,
                     chunk=chunk,
-                    score=_score_chunk(classification, chunk, r, conversation_diploma_slug),
+                    score=(
+                        _score_chunk(classification, chunk, r, conversation_diploma_slug)
+                        + max(0.0, 6.0 - (rank * 0.35))
+                        + (
+                            max(0.0, 1.0 - float(chunk.distance)) * 8.0
+                            if chunk.distance is not None
+                            else 0.0
+                        )
+                    ),
                     retrieval_reason=r,
                     source_bucket=_source_bucket(chunk),
                 )
-                for chunk in chunks
+                for rank, chunk in enumerate(chunks)
             ]
         
         # Also boost by conversation diploma names (from previous turn)
@@ -3027,8 +3146,12 @@ class LegalRetrievalService:
                 evidences.extend(sub_evidences)
 
         ranked = _dedupe_ranked(evidences)
-        concept_rescue = _direct_legal_concept_rescue(
-            question, classification, conversation_history
+        concept_rescue = (
+            []
+            if classification.needs_multi_branch_handling
+            else _direct_legal_concept_rescue(
+                question, classification, conversation_history
+            )
         )
         if concept_rescue:
             ranked = _dedupe_ranked(concept_rescue + ranked)
@@ -3047,15 +3170,10 @@ class LegalRetrievalService:
                     )
         ranked = [item for item in ranked if item.score > 0.5]
 
-        official = _final_official_selection(classification, ranked)
-        official = _apply_post_filters(classification, question, official)
-        official = _target_branch_priority(classification, official)
-        official = _filter_by_question_relevance(classification, question, official)
+        official = _generic_official_selection(classification, ranked)
         official = _promote_jurisprudence_if_requested(
             classification, question, official
         )
-        official = _question_specific_branch_filter(classification, question, official)
-        official = _limit_by_branch(classification, official)
         official = _prioritize_legal_concept_rescue(classification, question, official)
         reference_evidence = _expand_dynamic_article_references(official)
         if reference_evidence:
@@ -3080,9 +3198,10 @@ class LegalRetrievalService:
             additions = [item for batch in correction_results for item in batch]
             if not additions:
                 break
-            official = _dedupe_ranked(official + additions)
-            official = _filter_by_question_relevance(
-                classification, question, official
+            official = _generic_official_selection(
+                classification,
+                official + additions,
+                limit=30,
             )
             assessment = retrieval_quality_evaluator.assess(
                 query_plan, classification, official

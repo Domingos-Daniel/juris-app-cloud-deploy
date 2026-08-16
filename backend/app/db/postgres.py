@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -1785,10 +1786,15 @@ class PostgresManager:
                 embedding_service.model_name,
             ),
         )
+        exact_article_query = bool(
+            re.search(r"\b(?:art(?:igo)?\.?\s*)\d+", query, re.IGNORECASE)
+        )
         fused = self._reciprocal_rank_fusion(
             lexical_rows,
             dense_rows,
             limit=max(1, k),
+            lexical_weight=1.2 if exact_article_query else 1.0,
+            dense_weight=1.0 if exact_article_query else 1.35,
         )
         return [
             self._segment_to_chunk(row, distance=row.get("distance")) for row in fused
@@ -1904,10 +1910,15 @@ class PostgresManager:
         dense_rows: list[dict[str, Any]],
         limit: int,
         rank_constant: int = 60,
+        lexical_weight: float = 1.15,
+        dense_weight: float = 1.0,
     ) -> list[dict[str, Any]]:
         scores: dict[str, float] = {}
         rows: dict[str, dict[str, Any]] = {}
-        for weight, ranked in ((1.15, lexical_rows), (1.0, dense_rows)):
+        for weight, ranked in (
+            (lexical_weight, lexical_rows),
+            (dense_weight, dense_rows),
+        ):
             for rank, row in enumerate(ranked, start=1):
                 chunk_id = str(row["id"])
                 rows.setdefault(chunk_id, row)

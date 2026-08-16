@@ -15,7 +15,10 @@ def _vector_literal(values: list[float]) -> str:
 
 
 def _fetch_batch(
-    limit: int, source_scope: str | None, primary_only: bool
+    limit: int,
+    source_scope: str | None,
+    primary_only: bool,
+    diploma_slugs: list[str],
 ) -> list[dict]:
     postgres_manager.initialize()
     identity = embedding_service.vector_metadata()
@@ -26,6 +29,9 @@ def _fetch_batch(
         params.append(source_scope)
     if primary_only:
         clauses.append("coalesce((metadata->>'is_primary_source')::boolean, false)")
+    if diploma_slugs:
+        clauses.append("diploma_slug = ANY(%s)")
+        params.append(diploma_slugs)
     clauses.append(
         "(embedding IS NULL OR embedding_provider IS DISTINCT FROM %s "
         "OR embedding_model IS DISTINCT FROM %s "
@@ -115,6 +121,7 @@ async def run(
     sleep_seconds: float,
     primary_only: bool,
     parallelism: int,
+    diploma_slugs: list[str],
 ) -> None:
     settings = get_settings()
     if settings.embedding_model_type != "cloudflare":
@@ -122,7 +129,7 @@ async def run(
     total = 0
     started = time.time()
     while True:
-        items = _fetch_batch(batch_size, source_scope, primary_only)
+        items = _fetch_batch(batch_size, source_scope, primary_only, diploma_slugs)
         if not items:
             break
         group_size = max(1, (len(items) + parallelism - 1) // parallelism)
@@ -152,6 +159,7 @@ def main() -> None:
     parser.add_argument("--sleep", type=float, default=0.25)
     parser.add_argument("--primary-only", action="store_true")
     parser.add_argument("--parallelism", type=int, default=1)
+    parser.add_argument("--diploma-slug", action="append", default=[])
     args = parser.parse_args()
     asyncio.run(
         run(
@@ -160,6 +168,7 @@ def main() -> None:
             args.sleep,
             args.primary_only,
             max(1, args.parallelism),
+            args.diploma_slug,
         )
     )
 
