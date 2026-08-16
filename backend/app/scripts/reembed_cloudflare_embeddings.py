@@ -114,6 +114,7 @@ async def run(
     source_scope: str | None,
     sleep_seconds: float,
     primary_only: bool,
+    parallelism: int,
 ) -> None:
     settings = get_settings()
     if settings.embedding_model_type != "cloudflare":
@@ -124,8 +125,17 @@ async def run(
         items = _fetch_batch(batch_size, source_scope, primary_only)
         if not items:
             break
-        texts = [item["text_content"] for item in items]
-        vectors = await embedding_service.embed_texts_for_ingestion(texts)
+        group_size = max(1, (len(items) + parallelism - 1) // parallelism)
+        groups = [items[index : index + group_size] for index in range(0, len(items), group_size)]
+        vector_groups = await asyncio.gather(
+            *[
+                embedding_service.embed_texts_for_ingestion(
+                    [item["text_content"] for item in group]
+                )
+                for group in groups
+            ]
+        )
+        vectors = [vector for group in vector_groups for vector in group]
         _update_embeddings(items, vectors)
         total += len(items)
         elapsed = max(0.1, time.time() - started)
@@ -141,6 +151,7 @@ def main() -> None:
     parser.add_argument("--source-scope", default="official")
     parser.add_argument("--sleep", type=float, default=0.25)
     parser.add_argument("--primary-only", action="store_true")
+    parser.add_argument("--parallelism", type=int, default=1)
     args = parser.parse_args()
     asyncio.run(
         run(
@@ -148,6 +159,7 @@ def main() -> None:
             args.source_scope or None,
             args.sleep,
             args.primary_only,
+            max(1, args.parallelism),
         )
     )
 

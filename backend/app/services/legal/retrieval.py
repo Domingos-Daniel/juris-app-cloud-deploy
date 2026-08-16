@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections import defaultdict
 
@@ -18,6 +19,8 @@ from app.services.legal.reranker import llm_reranker
 from app.services.legal.retrieval_quality import retrieval_quality_evaluator
 from app.services.rag.retriever import retriever_service
 from app.services.pdf.document_context import document_context_service
+
+logger = logging.getLogger(__name__)
 
 ARTICLE_RE = re.compile(r"(?:art|artigo|artigos)\s*(\d+[.]?\d*)", re.IGNORECASE)
 WORD_RE = re.compile(r"\w+", re.UNICODE)
@@ -2662,6 +2665,7 @@ def _concept_chunk_score(
 ) -> float:
     text = _normalize(chunk.text)
     phrase_norm = _normalize(phrase)
+    phrase_stem = _concept_search_stem(phrase_norm)
     refs = {
         str(item).replace(".", "").strip()
         for item in (chunk.metadata or {}).get("article_references", [])
@@ -2670,14 +2674,29 @@ def _concept_chunk_score(
     score = 70.0
     if phrase_norm and phrase_norm in text:
         score += 18.0
+    elif phrase_stem and phrase_stem in text[:220]:
+        score += 18.0
     phrase_tokens = [token for token in WORD_RE.findall(phrase_norm) if token not in STOPWORDS]
-    score += sum(2.0 for token in phrase_tokens if token in text)
+    score += sum(2.0 for token in phrase_tokens if _concept_search_stem(token) in text)
 
     if (chunk.metadata or {}).get("segmentation") == "article_block":
         score += 6.0
+    if len(text) < 180 or text.count(".") > max(8, len(text) // 12):
+        score -= 18.0
     if not refs:
         score -= 6.0
     return score
+
+
+def _concept_search_stem(value: str) -> str:
+    normalized = _normalize(value).strip()
+    for suffix in (
+        "amentos", "imentos", "idades", "mente", "ções", "coes", "amento",
+        "imento", "idade", "ção", "cao", "ar", "er", "ir",
+    ):
+        if normalized.endswith(suffix) and len(normalized) - len(suffix) >= 5:
+            return normalized[: -len(suffix)]
+    return normalized[:7] if len(normalized) > 9 else normalized
 
 
 def _direct_legal_concept_rescue(
@@ -2695,6 +2714,7 @@ def _direct_legal_concept_rescue(
                source_scope, document_id, metadata, text_content
         FROM legal_segments
         WHERE source_scope = 'official'
+          AND (%s::text IS NULL OR legal_branch = %s)
           AND (
                 text_content ILIKE %s
                 OR title ILIKE %s
@@ -2703,15 +2723,30 @@ def _direct_legal_concept_rescue(
         ORDER BY page ASC, article_number ASC
         LIMIT 10
     """
+    branch_filter = (
+        classification.main_branch
+        if classification.main_branch not in {"misto", "indeterminado"}
+        else None
+    )
     try:
         with postgres_manager.connection() as conn, conn.cursor() as cur:
             for phrase in phrases:
-                cur.execute(sql, (f"%{phrase}%", f"%{phrase}%", phrase))
+                search_term = _concept_search_stem(phrase)
+                cur.execute(
+                    sql,
+                    (
+                        branch_filter,
+                        branch_filter,
+                        f"%{search_term}%",
+                        f"%{search_term}%",
+                        phrase,
+                    ),
+                )
                 candidates: list[RetrievalEvidence] = []
                 for row in cur.fetchall():
                     chunk = postgres_manager._segment_to_chunk(row)
                     score = _concept_chunk_score(chunk, phrase, question)
-                    if score < 105.0:
+                    if score < 75.0:
                         continue
                     candidates.append(
                         RetrievalEvidence(
@@ -2724,7 +2759,8 @@ def _direct_legal_concept_rescue(
                     )
                 candidates.sort(key=lambda item: item.score, reverse=True)
                 rescued.extend(candidates[:1])
-    except Exception:
+    except Exception as exc:
+        logger.warning("Dynamic legal concept rescue failed: %s", exc)
         return []
 
     return _dedupe_ranked(rescued)[:6]

@@ -64,7 +64,7 @@ class EvidenceVerifier:
         negative_supported = self._negative_supported(question, evidences)
         unsupported_claims = self._unsupported_claims(answer, evidences)
         if has_negative_claim and (not quality_sufficient or not negative_supported):
-            guarded = self._guard_negative_answer(answer)
+            guarded = self._guard_negative_answer(evidences)
             return guarded, ClaimVerificationReport(
                 supported=False,
                 negative_claim_guarded=True,
@@ -143,18 +143,29 @@ class EvidenceVerifier:
         return False
 
     @staticmethod
-    def _guard_negative_answer(answer: str) -> str:
-        sections = re.split(r"(?=\n###\s+)", answer.strip())
-        remainder = "".join(sections[1:]).strip() if len(sections) > 1 else ""
+    def _guard_negative_answer(evidences: list[RetrievalEvidence]) -> str:
+        bases: list[str] = []
+        for evidence in evidences[:5]:
+            article = str(
+                (evidence.chunk.metadata or {}).get("article_main")
+                or evidence.chunk.article_number
+                or ""
+            ).strip()
+            title = (evidence.chunk.title or evidence.chunk.source or "Fonte jurídica").strip()
+            label = f"Art. {article} — {title}" if article else title
+            if label not in bases:
+                bases.append(label)
         guarded = (
-            "### Resposta\n\n"
-            "As fontes recuperadas ainda não permitem confirmar nem negar esta conclusão com segurança. "
-            "A ausência da competência numa norma genérica não prova que ela não esteja prevista noutra disposição aplicável.\n\n"
-            "### Limitação da pesquisa\n\n"
-            "É necessário localizar a norma específica que atribua ou exclua expressamente a competência antes de responder de forma categórica."
+            "### Resposta limitada pelas fontes\n\n"
+            "As fontes recuperadas ainda não permitem confirmar nem negar a conclusão com segurança. "
+            "Por isso, não apresento como certa uma afirmação positiva ou negativa que não esteja expressamente demonstrada no corpus.\n\n"
+            "### O que falta verificar\n\n"
+            "É necessário localizar a norma específica que atribua, condicione ou exclua expressamente a consequência jurídica perguntada."
         )
-        if remainder:
-            guarded += f"\n\n{remainder}"
+        if bases:
+            guarded += "\n\n### Fontes analisadas sem confirmação conclusiva\n\n" + "\n".join(
+                f"- {base}" for base in bases
+            )
         return guarded
 
 
