@@ -10,6 +10,11 @@ NEGATIVE_CLAIM_RE = re.compile(
     r"\b(?:não|nao)\s+(?:sendo\s+[^.!?]{0,40}\s+)?(?:existe|há|ha|pode|possui|tem|compete|pratica|responde|incorre|constitui|configura(?:d[oa])?|é permitido|e permitido|se aplica)\b",
     re.IGNORECASE,
 )
+BINARY_LEGAL_QUESTION_RE = re.compile(
+    r"\b(?:pode|podem|compete|existe|há|ha|tem\s+direito|é\s+permitido|e\s+permitido|"
+    r"constitui|configura|aplica-se|aplica\s+se|é\s+válido|e\s+valido)\b",
+    re.IGNORECASE,
+)
 EXPLICIT_NEGATIVE_EVIDENCE = (
     "não pode",
     "nao pode",
@@ -70,7 +75,12 @@ class EvidenceVerifier:
             *removed_citations,
             *self._unsupported_claims(answer, evidences),
         ]
-        if has_negative_claim and (not quality_sufficient or not negative_supported):
+        principally_negative = self._is_principally_negative_answer(answer, question)
+        if (
+            has_negative_claim
+            and principally_negative
+            and (not quality_sufficient or not negative_supported)
+        ):
             guarded = self._guard_negative_answer(evidences)
             return guarded, ClaimVerificationReport(
                 supported=False,
@@ -84,6 +94,12 @@ class EvidenceVerifier:
             supported=not unsupported_claims,
             unsupported_claims=unsupported_claims,
         )
+
+    @staticmethod
+    def _is_principally_negative_answer(answer: str, question: str) -> bool:
+        plain = re.sub(r"^[#*\s]+", "", answer or "").strip()
+        starts_negative = bool(re.match(r"^(?:não|nao)\b", plain, re.IGNORECASE))
+        return starts_negative or bool(BINARY_LEGAL_QUESTION_RE.search(question or ""))
 
     @staticmethod
     def _remove_unverified_article_claims(

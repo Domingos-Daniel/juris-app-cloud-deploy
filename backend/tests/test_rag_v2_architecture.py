@@ -168,6 +168,33 @@ def test_negative_answer_is_guarded_without_explicit_exclusion():
     assert "não tem competência" not in answer
 
 
+def test_multibranch_analysis_is_not_replaced_by_negative_caveat():
+    chunk = RetrievedChunk(
+        chunk_id="363",
+        text="Artigo 363.º Peculato de uso. O funcionário público que usar coisa móvel para fins diferentes dos devidos.",
+        source="cp.pdf",
+        title="Código Penal",
+        link_original=None,
+        page=60,
+        article_number="363",
+        law_status="Em vigor",
+        source_scope="official",
+        metadata={"article_main": "363", "legal_branch": "penal"},
+    )
+    draft = (
+        "### Responsabilidade penal\n\nO Art. 363.º deve ser analisado. "
+        "A responsabilidade civil não se aplica automaticamente ao Estado."
+    )
+    answer, report = evidence_verifier.verify_and_guard(
+        draft,
+        "Analise as responsabilidades disciplinar, civil, penal e administrativa.",
+        [RetrievalEvidence("q", chunk, 1.0, "base", "official")],
+        ["retrieval_quality=sufficient:0.900"],
+    )
+    assert not report.negative_claim_guarded
+    assert "Art. 363" in answer
+
+
 def test_unverified_article_citation_is_removed_from_answer():
     chunk = RetrievedChunk(
         chunk_id="363",
