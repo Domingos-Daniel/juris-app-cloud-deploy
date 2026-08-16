@@ -2367,6 +2367,7 @@ def _generic_official_selection(
 
     if requested_branches:
         branch_quota = max(2, limit // len(requested_branches))
+        branch_rankings: dict[LegalBranch, list[RetrievalEvidence]] = {}
         for branch in requested_branches:
             branch_items = [
                 evidence
@@ -2381,14 +2382,22 @@ def _generic_official_selection(
                 ),
                 key=lambda evidence: float(evidence.chunk.distance),
             )[:2]
-            branch_selected = 0
+            ordered_branch: list[RetrievalEvidence] = []
+            branch_seen: set[str] = set()
             for evidence in [*dense_anchors, *branch_items]:
-                if evidence.chunk.chunk_id in seen:
+                if evidence.chunk.chunk_id in branch_seen:
                     continue
-                add(evidence)
-                branch_selected += 1
-                if branch_selected >= branch_quota:
+                ordered_branch.append(evidence)
+                branch_seen.add(evidence.chunk.chunk_id)
+                if len(ordered_branch) >= branch_quota:
                     break
+            branch_rankings[branch] = ordered_branch
+
+        for position in range(branch_quota):
+            for branch in requested_branches:
+                branch_items = branch_rankings.get(branch, [])
+                if position < len(branch_items):
+                    add(branch_items[position])
 
     for evidence in candidates:
         if evidence.retrieval_reason in protected_reasons:
@@ -2409,8 +2418,17 @@ def _branch_group_source(
 def _mix_prioritized_chunks(
     official: list[RetrievalEvidence], user_docs: list[RetrievalEvidence]
 ) -> list[RetrievedChunk]:
-    all_evidence = sorted(official + user_docs, key=lambda x: x.score, reverse=True)
-    return [item.chunk for item in all_evidence[:THEME_LIMIT_OFFICIAL]]
+    ordered = [*user_docs, *official]
+    seen: set[str] = set()
+    chunks: list[RetrievedChunk] = []
+    for evidence in ordered:
+        if evidence.chunk.chunk_id in seen:
+            continue
+        seen.add(evidence.chunk.chunk_id)
+        chunks.append(evidence.chunk)
+        if len(chunks) >= THEME_LIMIT_OFFICIAL:
+            break
+    return chunks
 
 
 def _retrieval_notes(

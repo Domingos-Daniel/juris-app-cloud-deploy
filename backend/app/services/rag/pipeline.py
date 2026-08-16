@@ -1101,16 +1101,16 @@ class RAGPipeline:
         coerced = RAGPipeline._coerce_ai_preferences(prefs)
         detail_level = coerced.get("detail_level", "normal")
         if detail_level == "breve":
-            return 380
+            return 450
         if detail_level == "detalhado":
-            return 520
+            return 1200
         if audience == "leigo":
-            return 300
+            return 480
         if audience == "tecnico":
-            return 420
+            return 750
         if audience == "didatico":
-            return 360
-        return 340
+            return 650
+        return 600
 
     @staticmethod
     def _query_requests_detailed_answer(query: str) -> bool:
@@ -1830,9 +1830,9 @@ class RAGPipeline:
             query_context and "Contexto profissional do caso associado:" in query_context
         )
         if self._query_requests_detailed_answer(normalized_query):
-            response_max_tokens = max(response_max_tokens, 920)
+            response_max_tokens = max(response_max_tokens, 1500)
         if professional_context:
-            response_max_tokens = max(response_max_tokens, 980)
+            response_max_tokens = max(response_max_tokens, 1700)
         prompt = legal_composer.build_prompt(
             effective_query,
             classification,
@@ -2932,9 +2932,9 @@ class RAGPipeline:
             query_context and "Contexto profissional do caso associado:" in query_context
         )
         if self._query_requests_detailed_answer(normalized_query):
-            response_max_tokens = max(response_max_tokens, 920)
+            response_max_tokens = max(response_max_tokens, 1500)
         if professional_context:
-            response_max_tokens = max(response_max_tokens, 980)
+            response_max_tokens = max(response_max_tokens, 1700)
         prompt = legal_composer.build_prompt(
             effective_query,
             classification,

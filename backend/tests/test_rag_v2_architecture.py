@@ -242,6 +242,9 @@ def test_generic_selection_preserves_multibranch_legal_evidence():
     )
     branches = {item.chunk.metadata["legal_branch"] for item in selected}
     assert branches == {"administrativo", "civil", "penal"}
+    assert {
+        item.chunk.metadata["legal_branch"] for item in selected[:3]
+    } == {"administrativo", "civil", "penal"}
     articles = [item.chunk.article_number for item in selected]
     assert articles.index("363") < articles.index("406")
 
@@ -262,6 +265,15 @@ def test_explicit_diploma_alias_is_preserved():
     classified = apply_pre_classification(
         {"main_branch": "penal", "topic_route": "cpp", "requested_diplomas": []},
         "Explique os artigos 10 e 137 do CPP.",
+    )
+    assert classified["requested_diplomas"] == ["Código do Processo Penal"]
+
+
+def test_full_cpp_name_with_de_is_preserved_and_negated_penal_code_is_ignored():
+    classified = apply_pre_classification(
+        {"main_branch": "penal", "topic_route": "cpp", "requested_diplomas": []},
+        "Explique os artigos 10 e 137 do Código de Processo Penal. "
+        "Não confunda com o Código Penal.",
     )
     assert classified["requested_diplomas"] == ["Código do Processo Penal"]
 

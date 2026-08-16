@@ -378,7 +378,7 @@ _LEIGO_PATTERNS = re.compile(
 )
 
 _EXPLICIT_DIPLOMA_ALIASES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(?:c[oó]digo\s+(?:do\s+)?processo\s+penal|cpp|ccp)\b", re.I), "Código do Processo Penal"),
+    (re.compile(r"\b(?:c[oó]digo\s+(?:(?:do|de)\s+)?processo\s+penal|cpp|ccp)\b", re.I), "Código do Processo Penal"),
     (re.compile(r"\b(?:c[oó]digo\s+penal)\b", re.I), "Código Penal"),
     (re.compile(r"\b(?:lei\s+geral\s+do\s+trabalho|lgt)\b", re.I), "Lei Geral do Trabalho"),
     (re.compile(r"\b(?:constitui[çc][aã]o\s+(?:da\s+rep[uú]blica\s+de\s+angola|angolana)|cra)\b", re.I), "Constituição da República de Angola"),
