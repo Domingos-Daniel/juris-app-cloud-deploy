@@ -91,6 +91,39 @@ TOPIC_HINTS = {
         "transferencias",
     ),
 }
+
+SEMANTIC_BRANCH_MARKERS: dict[LegalBranch, tuple[str, ...]] = {
+    "constitucional": (
+        "constitui",
+        "direito fundamental",
+        "liberdade de imprensa",
+        "liberdade de express",
+    ),
+    "administrativo": ("administrativ", "disciplinar", "função pública", "funcao publica"),
+    "civil": ("responsabilidade civil", "indemniza", "indeniza", "danos"),
+    "penal": ("responsabilidade penal", "crime", "corrup", "peculato", "segredo"),
+    "laboral": ("laboral", "trabalh", "despedimento", "empregador"),
+    "familia": ("família", "familia", "casamento", "divórcio", "divorcio"),
+    "tributario": ("tribut", "imposto", "fiscal"),
+    "comercial": ("comercial", "sociedade", "empresa"),
+}
+
+
+def _semantic_query_branch(
+    query: str, classification: LegalClassification
+) -> LegalBranch | None:
+    normalized = _normalize(query)
+    allowed = {
+        branch
+        for branch in _target_branches(classification)
+        if branch not in {"misto", "indeterminado"}
+    }
+    matches = [
+        branch
+        for branch, markers in SEMANTIC_BRANCH_MARKERS.items()
+        if branch in allowed and any(marker in normalized for marker in markers)
+    ]
+    return matches[0] if len(matches) == 1 else None
 LABOR_COMPENSATION_TERMS = (
     "compensação",
     "compensacao",
@@ -2384,7 +2417,8 @@ def _generic_official_selection(
             )[:2]
             ordered_branch: list[RetrievalEvidence] = []
             branch_seen: set[str] = set()
-            for evidence in [*dense_anchors, *branch_items]:
+            score_anchor = branch_items[:1]
+            for evidence in [*score_anchor, *dense_anchors, *branch_items[1:]]:
                 if evidence.chunk.chunk_id in branch_seen:
                     continue
                 ordered_branch.append(evidence)
@@ -2729,7 +2763,11 @@ def _build_queries(
     ]
     for planned_query in list(dict.fromkeys(item.strip() for item in planned_queries if item.strip()))[:6]:
         if _normalize(planned_query) != _normalize(question):
-            add(planned_query, "semantic_plan", {"source_scope": "official"})
+            where = {"source_scope": "official"}
+            semantic_branch = _semantic_query_branch(planned_query, classification)
+            if semantic_branch:
+                where["legal_branch"] = semantic_branch
+            add(planned_query, "semantic_plan", where)
 
     route_hint = TOPIC_ROUTE_QUERY_HINTS.get(classification.topic_route)
     if route_hint:

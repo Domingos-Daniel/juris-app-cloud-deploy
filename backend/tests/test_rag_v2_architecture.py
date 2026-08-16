@@ -9,6 +9,7 @@ from app.services.legal.retrieval import (
     _build_queries,
     _concept_search_stem,
     _generic_official_selection,
+    _semantic_query_branch,
 )
 from app.services.legal.retrieval_quality import retrieval_quality_evaluator
 from app.services.legal.pre_classifier import apply_pre_classification
@@ -125,6 +126,26 @@ def test_retrieval_uses_original_facts_and_semantic_plan():
     }
     assert set(classification.search_queries).issubset(semantic_queries)
     assert classification.search_query in semantic_queries
+
+
+def test_semantic_plan_is_scoped_to_an_unambiguous_requested_branch():
+    classification = _classification(
+        main_branch="misto",
+        branch_candidates=["penal", "constitucional", "administrativo"],
+        needs_multi_branch_handling=True,
+    )
+    assert (
+        _semantic_query_branch(
+            "liberdade de imprensa e direitos constitucionais", classification
+        )
+        == "constitucional"
+    )
+    assert (
+        _semantic_query_branch(
+            "corrupção e responsabilidade administrativa", classification
+        )
+        is None
+    )
 
 
 def test_retrieval_quality_requests_correction_for_irrelevant_article():
